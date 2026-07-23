@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 
 /// 应用配置，与前端 types/index.ts 中的 AppConfig 对齐
-/// 注意：apiKey 在原型阶段暂存本地 JSON，存在安全风险，后续切换到系统凭据存储。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {

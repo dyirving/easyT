@@ -31,6 +31,11 @@ const TRAY_EVENT_QUIT: &str = "tray://quit";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(tauri_plugin_window_state::StateFlags::SIZE)
+                .build(),
+        )
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -52,15 +57,18 @@ pub fn run() {
             let shortcut_str = config.shortcut.clone();
             app.manage(AppState::new(config));
 
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.show();
+            }
+
             // 注册全局快捷键插件
             #[cfg(desktop)]
             {
                 app.handle()
                     .plugin(tauri_plugin_clipboard_manager::init())?;
 
-                app.handle().plugin(
-                    tauri_plugin_global_shortcut::Builder::new().build(),
-                )?;
+                app.handle()
+                    .plugin(tauri_plugin_global_shortcut::Builder::new().build())?;
                 // 初始化快捷键管理器并注册默认快捷键
                 if let Err(e) = shortcut::init(app.handle(), &shortcut_str) {
                     log::warn!("快捷键初始化失败: {e}");

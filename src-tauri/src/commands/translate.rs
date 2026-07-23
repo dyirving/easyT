@@ -31,9 +31,7 @@ pub async fn translate_text(
 /// 使用前端传入的草稿配置发起极短翻译请求（"hi" → 目标语言）验证可用
 /// 不修改 AppState，避免未保存的草稿污染主流程
 #[tauri::command]
-pub async fn test_api_connection(
-    config: crate::config::AppConfig,
-) -> AppResult<String> {
+pub async fn test_api_connection(config: crate::config::AppConfig) -> AppResult<String> {
     crate::commands::config::validate_config(&config)?;
     if config.api_key.trim().is_empty() {
         return Err(AppError::ApiUnauthorized);

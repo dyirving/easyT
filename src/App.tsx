@@ -24,6 +24,10 @@ const markDragRegionPointerDown = () => {
   suppressAutoHideUntil = Date.now() + 1500;
 };
 
+const markWindowResizeInteraction = () => {
+  suppressAutoHideUntil = Date.now() + 1200;
+};
+
 export default function App() {
   const [route, setRoute] = useState<Route>("translation");
   const loadConfig = useSettingsStore((s) => s.loadConfig);
@@ -156,8 +160,39 @@ export default function App() {
   // 监听窗口失焦：非固定状态下根据 autoHide 隐藏
   useEffect(() => {
     const win = getCurrentWindow();
-    let unlisten: UnlistenFn | null = null;
+    let unlistenFocus: UnlistenFn | null = null;
+    let unlistenResize: UnlistenFn | null = null;
     let cancelled = false;
+    let focusedState = true;
+    let deferredHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearDeferredHide = () => {
+      if (deferredHideTimer) {
+        clearTimeout(deferredHideTimer);
+        deferredHideTimer = null;
+      }
+    };
+
+    const hideIfAllowed = () => {
+      if (focusedState) return;
+      const { pinned } = useTranslationStore.getState();
+      const { config } = useSettingsStore.getState();
+      if (!pinned && config.autoHide) {
+        win.hide().catch(() => {
+          /* 忽略隐藏失败 */
+        });
+      }
+    };
+
+    const scheduleDeferredHide = (minimumDelayMs = 250) => {
+      clearDeferredHide();
+      const suppressionDelay = Math.max(suppressAutoHideUntil - Date.now(), 0);
+      const delay = Math.max(minimumDelayMs, suppressionDelay + 50);
+      deferredHideTimer = setTimeout(() => {
+        deferredHideTimer = null;
+        hideIfAllowed();
+      }, delay);
+    };
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -171,15 +206,30 @@ export default function App() {
 
     win
       .onFocusChanged(({ payload: focused }) => {
-        if (focused) return;
-        if (Date.now() < suppressAutoHideUntil) return;
-        // 失焦：检查 pinned 与 autoHide
-        const { pinned } = useTranslationStore.getState();
-        const { config } = useSettingsStore.getState();
-        if (!pinned && config.autoHide) {
-          win.hide().catch(() => {
-            /* 忽略隐藏失败 */
-          });
+        focusedState = focused;
+        if (focused) {
+          clearDeferredHide();
+          return;
+        }
+        if (Date.now() < suppressAutoHideUntil) {
+          scheduleDeferredHide();
+          return;
+        }
+        scheduleDeferredHide();
+      })
+      .then((f) => {
+        if (cancelled) {
+          f();
+          return;
+        }
+        unlistenFocus = f;
+      });
+
+    win
+      .onResized(() => {
+        markWindowResizeInteraction();
+        if (!focusedState) {
+          scheduleDeferredHide();
         }
       })
       .then((f) => {
@@ -187,13 +237,15 @@ export default function App() {
           f();
           return;
         }
-        unlisten = f;
+        unlistenResize = f;
       });
 
     return () => {
       cancelled = true;
+      clearDeferredHide();
       document.removeEventListener("pointerdown", handlePointerDown, true);
-      unlisten?.();
+      unlistenFocus?.();
+      unlistenResize?.();
     };
   }, []);
 
@@ -216,9 +268,11 @@ export default function App() {
         onOpenSettings={() => setRoute("settings")}
         onClose={() => {
           // 通过 Tauri 窗口 API 触发 close，会被 Rust 端拦截改为 hide
-          getCurrentWindow().close().catch(() => {
-            /* 忽略 */
-          });
+          getCurrentWindow()
+            .close()
+            .catch(() => {
+              /* 忽略 */
+            });
         }}
       />
     </div>

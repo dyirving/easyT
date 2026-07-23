@@ -17,7 +17,8 @@ fn get_main_window(app: &tauri::AppHandle) -> AppResult<WebviewWindow> {
 #[tauri::command]
 pub async fn show_translation_window(app: tauri::AppHandle) -> AppResult<()> {
     let win = get_main_window(&app)?;
-    win.show().map_err(|e| AppError::WindowError(e.to_string()))?;
+    win.show()
+        .map_err(|e| AppError::WindowError(e.to_string()))?;
     win.set_focus()
         .map_err(|e| AppError::WindowError(e.to_string()))?;
     Ok(())
@@ -27,7 +28,8 @@ pub async fn show_translation_window(app: tauri::AppHandle) -> AppResult<()> {
 #[tauri::command]
 pub async fn hide_translation_window(app: tauri::AppHandle) -> AppResult<()> {
     let win = get_main_window(&app)?;
-    win.hide().map_err(|e| AppError::WindowError(e.to_string()))?;
+    win.hide()
+        .map_err(|e| AppError::WindowError(e.to_string()))?;
     Ok(())
 }
 
@@ -36,10 +38,7 @@ pub async fn hide_translation_window(app: tauri::AppHandle) -> AppResult<()> {
 /// - 阶段8 判断是否需要重新定位窗口到鼠标附近
 /// - 后续可能影响 always_on_top 等窗口属性
 #[tauri::command]
-pub async fn set_window_pinned(
-    _app: tauri::AppHandle,
-    _pinned: bool,
-) -> AppResult<()> {
+pub async fn set_window_pinned(_app: tauri::AppHandle, _pinned: bool) -> AppResult<()> {
     // 当前阶段状态在前端 store 中，无需 Rust 端持久化
     Ok(())
 }
@@ -54,10 +53,7 @@ pub async fn set_window_pinned(
 /// 注意：调用方应在窗口 show() 之前调用此命令，
 /// 这样用户看到窗口时已经在正确位置，避免闪烁
 #[tauri::command]
-pub async fn position_window_near_mouse(
-    app: tauri::AppHandle,
-    pinned: bool,
-) -> AppResult<()> {
+pub async fn position_window_near_mouse(app: tauri::AppHandle, pinned: bool) -> AppResult<()> {
     // 1. pinned=true 时跳过：保持当前窗口位置不动
     if pinned {
         log::debug!("窗口已固定，跳过重新定位");
@@ -115,7 +111,10 @@ pub async fn position_window_near_mouse(
 
     log::debug!(
         "窗口已重新定位到鼠标附近: pos=({x}, {y}), mouse=({mx}, {my}), work_area=({}-{},{}-{})",
-        work.left, work.right, work.top, work.bottom
+        work.left,
+        work.right,
+        work.top,
+        work.bottom
     );
     Ok(())
 }

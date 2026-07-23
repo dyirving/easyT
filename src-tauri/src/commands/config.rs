@@ -20,17 +20,19 @@ impl AppState {
 
     /// 获取配置快照
     pub fn snapshot(&self) -> AppResult<AppConfig> {
-        let guard = self.config.lock().map_err(|e| {
-            AppError::Internal(format!("配置锁获取失败: {e}"))
-        })?;
+        let guard = self
+            .config
+            .lock()
+            .map_err(|e| AppError::Internal(format!("配置锁获取失败: {e}")))?;
         Ok(guard.clone())
     }
 
     /// 更新内存中的配置
     pub fn update(&self, config: AppConfig) -> AppResult<()> {
-        let mut guard = self.config.lock().map_err(|e| {
-            AppError::Internal(format!("配置锁获取失败: {e}"))
-        })?;
+        let mut guard = self
+            .config
+            .lock()
+            .map_err(|e| AppError::Internal(format!("配置锁获取失败: {e}")))?;
         *guard = config;
         Ok(())
     }
@@ -96,4 +98,3 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
     }
     Ok(())
 }
-

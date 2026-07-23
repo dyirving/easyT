@@ -17,9 +17,7 @@ pub fn config_path(app: &tauri::AppHandle) -> AppResult<PathBuf> {
         .path()
         .app_config_dir()
         .map_err(|e| AppError::Internal(format!("解析配置目录失败: {e}")))?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        AppError::Internal(format!("创建配置目录失败: {e}"))
-    })?;
+    fs::create_dir_all(&dir).map_err(|e| AppError::Internal(format!("创建配置目录失败: {e}")))?;
     Ok(dir.join(CONFIG_FILE_NAME))
 }
 
@@ -33,9 +31,8 @@ pub fn load_config(app: &tauri::AppHandle) -> AppResult<AppConfig> {
         let _ = write_config_inner(&path, &cfg);
         return Ok(cfg);
     }
-    let content = fs::read_to_string(&path).map_err(|e| {
-        AppError::Internal(format!("读取配置文件失败: {e}"))
-    })?;
+    let content = fs::read_to_string(&path)
+        .map_err(|e| AppError::Internal(format!("读取配置文件失败: {e}")))?;
     if content.trim().is_empty() {
         return Ok(default_config());
     }
@@ -57,20 +54,16 @@ pub fn save_config(app: &tauri::AppHandle, config: &AppConfig) -> AppResult<()> 
 }
 
 fn write_config_inner(path: &PathBuf, config: &AppConfig) -> AppResult<()> {
-    let json = serde_json::to_string_pretty(config).map_err(|e| {
-        AppError::Internal(format!("序列化配置失败: {e}"))
-    })?;
+    let json = serde_json::to_string_pretty(config)
+        .map_err(|e| AppError::Internal(format!("序列化配置失败: {e}")))?;
     let tmp = path.with_extension("json.tmp");
     {
-        let mut f = fs::File::create(&tmp).map_err(|e| {
-            AppError::Internal(format!("创建临时文件失败: {e}"))
-        })?;
-        f.write_all(json.as_bytes()).map_err(|e| {
-            AppError::Internal(format!("写入配置失败: {e}"))
-        })?;
-        f.sync_all().map_err(|e| {
-            AppError::Internal(format!("刷新配置到磁盘失败: {e}"))
-        })?;
+        let mut f = fs::File::create(&tmp)
+            .map_err(|e| AppError::Internal(format!("创建临时文件失败: {e}")))?;
+        f.write_all(json.as_bytes())
+            .map_err(|e| AppError::Internal(format!("写入配置失败: {e}")))?;
+        f.sync_all()
+            .map_err(|e| AppError::Internal(format!("刷新配置到磁盘失败: {e}")))?;
     }
     // 原子替换（Windows 上 replace 会覆盖目标）
     fs::rename(&tmp, path).map_err(|e| {

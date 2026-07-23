@@ -5,10 +5,7 @@ use crate::shortcut;
 /// 在设置页保存配置时由前端调用，传入新的快捷键字符串
 /// 失败时不会覆盖旧的（由 shortcut::register 内部保证）
 #[tauri::command]
-pub async fn register_shortcut(
-    app: tauri::AppHandle,
-    shortcut_str: String,
-) -> AppResult<()> {
+pub async fn register_shortcut(app: tauri::AppHandle, shortcut_str: String) -> AppResult<()> {
     shortcut::register(&app, &shortcut_str)
 }
 

@@ -46,7 +46,7 @@ export interface TranslationResult {
 }
 
 export async function translateText(
-  request: TranslateTextRequest
+  request: TranslateTextRequest,
 ): Promise<TranslationResult> {
   return invoke<TranslationResult>("translate_text", {
     text: request.text,
@@ -58,7 +58,7 @@ export async function translateText(
  * 测试 API 连接（占位，下一轮接入）
  */
 export async function testApiConnection(
-  config: AppConfig
+  config: AppConfig,
 ): Promise<{ ok: boolean; message: string }> {
   try {
     const message = await invoke<string>("test_api_connection", { config });
@@ -66,7 +66,10 @@ export async function testApiConnection(
   } catch (e) {
     return {
       ok: false,
-      message: e instanceof Object && "message" in e ? String((e as { message: string }).message) : "连接失败",
+      message:
+        e instanceof Object && "message" in e
+          ? String((e as { message: string }).message)
+          : "连接失败",
     };
   }
 }
@@ -103,12 +106,7 @@ export async function registerShortcut(shortcut: string): Promise<void> {
  * 用于在 UI 中展示友好的错误文案
  */
 export function toCommandError(e: unknown): CommandError {
-  if (
-    e &&
-    typeof e === "object" &&
-    "kind" in e &&
-    "message" in e
-  ) {
+  if (e && typeof e === "object" && "kind" in e && "message" in e) {
     const kind = (e as { kind: string }).kind as ErrorKind;
     const message = (e as { message: string }).message;
     return { kind, message };

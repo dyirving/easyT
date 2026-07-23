@@ -121,11 +121,6 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
           ) : null}
 
-          {/* 安全提示 */}
-          <div className="rounded-lg border border-dashed border-danger/40 bg-danger/5 px-3 py-2 text-xs text-ink-soft">
-            ⚠️ 原型阶段 API Key 暂存于本地 JSON，存在安全风险。正式版将切换到系统凭据存储。
-          </div>
-
           <Field
             label="API Base URL"
             htmlFor="baseUrl"
@@ -269,11 +264,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
           <div className="flex items-center gap-2 pt-1">
             <Button variant="primary" onClick={handleSave} disabled={saving}>
-              {saving ? (
-                <Loader2 className="h-4 w-4 animate-spin" />
-              ) : (
-                "保存"
-              )}
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "保存"}
             </Button>
             <Button
               variant="outline"

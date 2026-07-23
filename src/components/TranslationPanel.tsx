@@ -1,6 +1,10 @@
-import ReactMarkdown from "react-markdown";
-import rehypeKatex from "rehype-katex";
-import remarkMath from "remark-math";
+import { lazy, Suspense } from "react";
+
+const MarkdownTranslation = lazy(() =>
+  import("./MarkdownTranslation").then((module) => ({
+    default: module.MarkdownTranslation,
+  }))
+);
 
 interface TranslationPanelProps {
   text: string;
@@ -14,15 +18,15 @@ export function TranslationPanel({ text }: TranslationPanelProps) {
         译文
       </div>
       <div className="translation-markdown text-[15px] leading-relaxed text-ink">
-        <ReactMarkdown
-          remarkPlugins={[remarkMath]}
-          rehypePlugins={[rehypeKatex]}
-          components={{
-            a: ({ children }) => <span>{children}</span>,
-          }}
+        <Suspense
+          fallback={
+            <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-ink">
+              {text}
+            </p>
+          }
         >
-          {text}
-        </ReactMarkdown>
+          <MarkdownTranslation text={text} />
+        </Suspense>
       </div>
     </div>
   );

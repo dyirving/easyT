@@ -67,18 +67,17 @@ pub fn parse_shortcut(s: &str) -> AppResult<Shortcut> {
             "commandorcontrol" | "cmdorctrl" => mods |= Modifiers::CONTROL,
             _ => {
                 if code.is_some() {
-                    return Err(AppError::ShortcutRegistrationFailed(
-                        format!("快捷键格式错误：包含多个主键 '{s}'"),
-                    ));
+                    return Err(AppError::ShortcutRegistrationFailed(format!(
+                        "快捷键格式错误：包含多个主键 '{s}'"
+                    )));
                 }
                 code = Some(parse_code(p)?);
             }
         }
     }
 
-    let code = code.ok_or_else(|| {
-        AppError::ShortcutRegistrationFailed("快捷键缺少主键".to_string())
-    })?;
+    let code =
+        code.ok_or_else(|| AppError::ShortcutRegistrationFailed("快捷键缺少主键".to_string()))?;
 
     Ok(Shortcut::new(Some(mods), code))
 }
@@ -89,22 +88,56 @@ fn parse_code(name: &str) -> AppResult<tauri_plugin_global_shortcut::Code> {
     let lower = name.to_lowercase();
     let code = match lower.as_str() {
         // 字母
-        "a" => Code::KeyA, "b" => Code::KeyB, "c" => Code::KeyC, "d" => Code::KeyD,
-        "e" => Code::KeyE, "f" => Code::KeyF, "g" => Code::KeyG, "h" => Code::KeyH,
-        "i" => Code::KeyI, "j" => Code::KeyJ, "k" => Code::KeyK, "l" => Code::KeyL,
-        "m" => Code::KeyM, "n" => Code::KeyN, "o" => Code::KeyO, "p" => Code::KeyP,
-        "q" => Code::KeyQ, "r" => Code::KeyR, "s" => Code::KeyS, "t" => Code::KeyT,
-        "u" => Code::KeyU, "v" => Code::KeyV, "w" => Code::KeyW, "x" => Code::KeyX,
-        "y" => Code::KeyY, "z" => Code::KeyZ,
+        "a" => Code::KeyA,
+        "b" => Code::KeyB,
+        "c" => Code::KeyC,
+        "d" => Code::KeyD,
+        "e" => Code::KeyE,
+        "f" => Code::KeyF,
+        "g" => Code::KeyG,
+        "h" => Code::KeyH,
+        "i" => Code::KeyI,
+        "j" => Code::KeyJ,
+        "k" => Code::KeyK,
+        "l" => Code::KeyL,
+        "m" => Code::KeyM,
+        "n" => Code::KeyN,
+        "o" => Code::KeyO,
+        "p" => Code::KeyP,
+        "q" => Code::KeyQ,
+        "r" => Code::KeyR,
+        "s" => Code::KeyS,
+        "t" => Code::KeyT,
+        "u" => Code::KeyU,
+        "v" => Code::KeyV,
+        "w" => Code::KeyW,
+        "x" => Code::KeyX,
+        "y" => Code::KeyY,
+        "z" => Code::KeyZ,
         // 数字
-        "0" => Code::Digit0, "1" => Code::Digit1, "2" => Code::Digit2,
-        "3" => Code::Digit3, "4" => Code::Digit4, "5" => Code::Digit5,
-        "6" => Code::Digit6, "7" => Code::Digit7, "8" => Code::Digit8,
+        "0" => Code::Digit0,
+        "1" => Code::Digit1,
+        "2" => Code::Digit2,
+        "3" => Code::Digit3,
+        "4" => Code::Digit4,
+        "5" => Code::Digit5,
+        "6" => Code::Digit6,
+        "7" => Code::Digit7,
+        "8" => Code::Digit8,
         "9" => Code::Digit9,
         // F 键
-        "f1" => Code::F1, "f2" => Code::F2, "f3" => Code::F3, "f4" => Code::F4,
-        "f5" => Code::F5, "f6" => Code::F6, "f7" => Code::F7, "f8" => Code::F8,
-        "f9" => Code::F9, "f10" => Code::F10, "f11" => Code::F11, "f12" => Code::F12,
+        "f1" => Code::F1,
+        "f2" => Code::F2,
+        "f3" => Code::F3,
+        "f4" => Code::F4,
+        "f5" => Code::F5,
+        "f6" => Code::F6,
+        "f7" => Code::F7,
+        "f8" => Code::F8,
+        "f9" => Code::F9,
+        "f10" => Code::F10,
+        "f11" => Code::F11,
+        "f12" => Code::F12,
         // 空格、回车、ESC
         "space" => Code::Space,
         "enter" | "return" => Code::Enter,

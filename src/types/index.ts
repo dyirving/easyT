@@ -11,11 +11,7 @@
  * - error: 翻译失败
  */
 export type TranslationStatus =
-  | "idle"
-  | "capturing"
-  | "translating"
-  | "success"
-  | "error";
+  "idle" | "capturing" | "translating" | "success" | "error";
 
 /**
  * 前端翻译状态
@@ -48,7 +44,6 @@ export const TARGET_LANGUAGES: TargetLanguage[] = [
 
 /**
  * 应用配置（与 Rust 端 AppConfig 对应）
- * 注意：apiKey 在原型阶段暂存于本地 JSON，存在安全风险，后续替换为系统凭据存储。
  */
 export interface AppConfig {
   baseUrl: string;

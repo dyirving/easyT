@@ -6,7 +6,7 @@ use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use windows_sys::Win32::Foundation::POINT;
 use windows_sys::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MonitorFromPoint, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 
 use crate::app_error::{AppError, AppResult};
@@ -127,7 +127,10 @@ pub fn get_mouse_position() -> AppResult<(i32, i32)> {
 /// 工作区已排除任务栏等保留区域，适合用于窗口定位
 /// 若查询失败（极端情况：显示器被拔出），回退到主屏工作区
 pub fn get_monitor_work_area(point: (i32, i32)) -> AppResult<ScreenRect> {
-    let pt = POINT { x: point.0, y: point.1 };
+    let pt = POINT {
+        x: point.0,
+        y: point.1,
+    };
     // MONITOR_DEFAULTTONEAREST：若点不在任何显示器上，返回最近的那块
     let monitor = unsafe { MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST) };
     if monitor.is_null() {
@@ -143,9 +146,7 @@ pub fn get_monitor_work_area(point: (i32, i32)) -> AppResult<ScreenRect> {
     let ok = unsafe { GetMonitorInfoW(monitor, &mut info) };
     // windows-sys 中 BOOL 是 i32；非 0 表示成功
     if ok == 0 {
-        return Err(AppError::Internal(format!(
-            "GetMonitorInfoW 失败"
-        )));
+        return Err(AppError::Internal(format!("GetMonitorInfoW 失败")));
     }
 
     let rc = info.rcWork;

@@ -20,6 +20,8 @@ tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 # 剪贴板管理：阶段7 接入，读取选中文本与恢复原剪贴板内容
 tauri-plugin-clipboard-manager = "2"
+# 窗口状态：保存并恢复用户调整后的窗口尺寸
+tauri-plugin-window-state = "2.4.1"
 # 模拟键盘输入：阶段7 接入，模拟 Ctrl+C 触发系统复制
 enigo = "0.2"
 serde = { version = "1.0", features = ["derive"] }

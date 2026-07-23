@@ -1,0 +1,47 @@
+[package]
+name = "easyt"
+version = "0.1.0"
+description = "easyT - 轻量级 Windows 划词翻译应用"
+authors = ["easyT"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "easyt_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "2.11.3", features = ["tray-icon"] }
+tauri-plugin-log = "2"
+# 全局快捷键：阶段6 接入，提供 Ctrl+T 触发翻译
+tauri-plugin-global-shortcut = "2"
+# 剪贴板管理：阶段7 接入，读取选中文本与恢复原剪贴板内容
+tauri-plugin-clipboard-manager = "2"
+# 模拟键盘输入：阶段7 接入，模拟 Ctrl+C 触发系统复制
+enigo = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+# 异步运行时（后续阶段用于大模型请求与剪贴板恢复流程）
+tokio = { version = "1", features = ["full"] }
+# HTTP 客户端（后续阶段用于调用 OpenAI-compatible 接口）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 统一错误处理（实现 Display / Serialize，向前端友好返回）
+thiserror = "1"
+
+# Windows API：阶段8 接入，用于获取鼠标位置与显示器工作区
+# 仅 Windows 平台需要；通过 features 启用窗口定位所需子集
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+] }
+
+# 后续阶段将按需引入：
+# - enigo / windows-sys           (阶段7 模拟 Ctrl+C)
+
+[features]
+default = []

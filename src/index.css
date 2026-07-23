@@ -1,0 +1,64 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* 自定义滚动条，保持安静风格 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(120, 116, 108, 0.28);
+    border-radius: 8px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: rgba(120, 116, 108, 0.45);
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  /* 通用按钮基础样式 */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply text-ink-soft hover:bg-surface-soft hover:text-ink;
+  }
+  .btn-primary {
+    @apply bg-accent text-white hover:bg-accent/90;
+  }
+  .btn-outline {
+    @apply border border-line bg-surface-panel text-ink hover:bg-surface-soft;
+  }
+  .btn-danger {
+    @apply text-danger hover:bg-danger/10;
+  }
+
+  /* 输入框基础样式 */
+  .input {
+    @apply w-full rounded-lg border border-line bg-surface-panel px-3 py-2 text-sm text-ink outline-none transition focus:border-accent focus:ring-1 focus:ring-accent/30 placeholder:text-ink-muted;
+  }
+
+  /* 卡片/面板基础 */
+  .panel {
+    @apply rounded-xl border border-line bg-surface-panel shadow-soft;
+  }
+}

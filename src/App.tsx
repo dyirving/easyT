@@ -18,6 +18,11 @@ type Route = "translation" | "settings";
 // 模块级 in-flight 标志：防止用户连按快捷键触发并发翻译
 // 重入时直接丢弃后续请求，让正在进行的请求完成
 let shortcutInFlight = false;
+let suppressAutoHideUntil = 0;
+
+const markDragRegionPointerDown = () => {
+  suppressAutoHideUntil = Date.now() + 1500;
+};
 
 export default function App() {
   const [route, setRoute] = useState<Route>("translation");
@@ -154,9 +159,20 @@ export default function App() {
     let unlisten: UnlistenFn | null = null;
     let cancelled = false;
 
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest("[data-tauri-drag-region]")) {
+        markDragRegionPointerDown();
+      }
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+
     win
       .onFocusChanged(({ payload: focused }) => {
         if (focused) return;
+        if (Date.now() < suppressAutoHideUntil) return;
         // 失焦：检查 pinned 与 autoHide
         const { pinned } = useTranslationStore.getState();
         const { config } = useSettingsStore.getState();
@@ -176,6 +192,7 @@ export default function App() {
 
     return () => {
       cancelled = true;
+      document.removeEventListener("pointerdown", handlePointerDown, true);
       unlisten?.();
     };
   }, []);

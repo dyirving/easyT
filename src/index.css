@@ -1,3 +1,5 @@
+@import "katex/dist/katex.min.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -60,5 +62,50 @@
   /* 卡片/面板基础 */
   .panel {
     @apply rounded-xl border border-line bg-surface-panel shadow-soft;
+  }
+
+  .translation-markdown {
+    @apply break-words;
+  }
+
+  .translation-markdown p {
+    @apply my-0 whitespace-pre-wrap;
+  }
+
+  .translation-markdown p + p {
+    @apply mt-2;
+  }
+
+  .translation-markdown ul,
+  .translation-markdown ol {
+    @apply my-2 pl-5;
+  }
+
+  .translation-markdown ul {
+    @apply list-disc;
+  }
+
+  .translation-markdown ol {
+    @apply list-decimal;
+  }
+
+  .translation-markdown code {
+    @apply rounded bg-surface-soft px-1 py-0.5 text-[0.92em];
+  }
+
+  .translation-markdown pre {
+    @apply my-2 overflow-x-auto rounded bg-surface-soft p-2 text-xs;
+  }
+
+  .translation-markdown pre code {
+    @apply bg-transparent p-0;
+  }
+
+  .translation-markdown .katex-display {
+    @apply my-2 overflow-x-auto overflow-y-hidden py-1;
+  }
+
+  .translation-markdown .katex {
+    font-size: 1em;
   }
 }

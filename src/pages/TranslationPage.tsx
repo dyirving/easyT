@@ -36,7 +36,6 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     setTranslatedText,
     setStatus,
     setError,
-    setOriginalText,
     togglePinned,
   } = useTranslationStore();
   const { config } = useSettingsStore();
@@ -115,38 +114,6 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     }
   };
 
-  // 演示用：模拟数据切换
-  const loadDemoIdle = () => {
-    setOriginalText("");
-    setTranslatedText("");
-    setStatus("idle");
-    setError(null);
-  };
-  const loadDemoLoading = () => {
-    setOriginalText(
-      "The model uses a transformer-based architecture for sequence modeling."
-    );
-    setTranslatedText("");
-    setStatus("translating");
-    setError(null);
-  };
-  const loadDemoSuccess = () => {
-    setOriginalText(
-      "The model uses a transformer-based architecture for sequence modeling."
-    );
-    setTranslatedText(
-      "该模型采用基于 Transformer 的架构进行序列建模。"
-    );
-    setStatus("success");
-    setError(null);
-  };
-  const loadDemoError = () => {
-    setOriginalText("Some text that failed to translate.");
-    setTranslatedText("");
-    setStatus("error");
-    setError("API Key 未配置或无效（401）。", "ApiUnauthorized");
-  };
-
   // 阶段9：根据 errorKind 查表得到友好文案与可重试标识
   const friendlyError = (() => {
     if (status !== "error") return null;
@@ -202,34 +169,6 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
                   翻译
                 </Button>
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-center gap-1.5 pt-1">
-              <span className="text-xs text-ink-muted">演示状态：</span>
-              <button
-                className="rounded px-2 py-0.5 text-xs text-accent hover:bg-surface-soft"
-                onClick={loadDemoLoading}
-              >
-                loading
-              </button>
-              <button
-                className="rounded px-2 py-0.5 text-xs text-success hover:bg-surface-soft"
-                onClick={loadDemoSuccess}
-              >
-                success
-              </button>
-              <button
-                className="rounded px-2 py-0.5 text-xs text-danger hover:bg-surface-soft"
-                onClick={loadDemoError}
-              >
-                error
-              </button>
-              <button
-                className="rounded px-2 py-0.5 text-xs text-ink-muted hover:bg-surface-soft"
-                onClick={loadDemoIdle}
-              >
-                idle
-              </button>
             </div>
           </div>
         ) : null}

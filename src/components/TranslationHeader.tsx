@@ -26,11 +26,11 @@ export function TranslationHeader({
   canCopy,
 }: TranslationHeaderProps) {
   return (
-    <div
-      className="flex items-center justify-between border-b border-line px-3 py-2"
-      data-tauri-drag-region
-    >
-      <div className="flex items-center gap-1.5 text-sm font-medium text-ink">
+    <div className="flex items-center justify-between border-b border-line px-3 py-2">
+      <div
+        className="flex min-w-0 flex-1 items-center gap-1.5 self-stretch text-sm font-medium text-ink"
+        data-tauri-drag-region
+      >
         <span className="inline-block h-2 w-2 rounded-full bg-accent" />
         easyT
       </div>

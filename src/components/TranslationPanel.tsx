@@ -1,3 +1,7 @@
+import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
+import remarkMath from "remark-math";
+
 interface TranslationPanelProps {
   text: string;
 }
@@ -9,9 +13,17 @@ export function TranslationPanel({ text }: TranslationPanelProps) {
       <div className="mb-1 text-xs font-medium uppercase tracking-wide text-accent">
         译文
       </div>
-      <p className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-ink">
-        {text}
-      </p>
+      <div className="translation-markdown text-[15px] leading-relaxed text-ink">
+        <ReactMarkdown
+          remarkPlugins={[remarkMath]}
+          rehypePlugins={[rehypeKatex]}
+          components={{
+            a: ({ children }) => <span>{children}</span>,
+          }}
+        >
+          {text}
+        </ReactMarkdown>
+      </div>
     </div>
   );
 }

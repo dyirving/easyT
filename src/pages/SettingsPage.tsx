@@ -89,10 +89,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
 
   return (
     <div className="flex h-full flex-col">
-      <div
-        className="flex items-center justify-between border-b border-line px-3 py-2"
-        data-tauri-drag-region
-      >
+      <div className="flex items-center justify-between border-b border-line px-3 py-2">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-sm text-ink-soft hover:text-ink"
@@ -100,8 +97,13 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           <ArrowLeft className="h-4 w-4" />
           返回
         </button>
-        <span className="text-sm font-medium text-ink">设置</span>
-        <span className="w-12" />
+        <div
+          className="flex flex-1 justify-center text-sm font-medium text-ink"
+          data-tauri-drag-region
+        >
+          设置
+        </div>
+        <span className="w-12" data-tauri-drag-region />
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4">

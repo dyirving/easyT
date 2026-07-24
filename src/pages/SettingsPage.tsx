@@ -12,7 +12,12 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Switch } from "@/components/ui/Switch";
 import { ShortcutInput } from "@/components/ShortcutInput";
-import { TARGET_LANGUAGES } from "@/types";
+import {
+  TARGET_LANGUAGES,
+  MODEL_PROVIDERS,
+  getProviderPreset,
+  type ModelProvider,
+} from "@/types";
 
 interface SettingsPageProps {
   onBack: () => void;
@@ -87,6 +92,42 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
     }
   };
 
+  // 切换供应商：内置供应商自动填入 Base URL，并把模型重置为该供应商首个模型；
+  // 自定义供应商则清空 Base URL 与模型，交由用户填写。
+  // 同时从 apiKeys 存储池恢复该供应商的 API Key（未填写则为空）。
+  const handleProviderChange = (provider: ModelProvider) => {
+    const preset = getProviderPreset(provider);
+    if (!preset) return;
+    const restoredKey = config.apiKeys[provider] ?? "";
+    if (provider === "custom") {
+      setConfig({
+        provider,
+        baseUrl: "",
+        model: "",
+        apiKey: restoredKey,
+      });
+    } else {
+      const firstModel = preset.models[0]?.value ?? "";
+      setConfig({
+        provider,
+        baseUrl: preset.baseUrl,
+        model: firstModel,
+        apiKey: restoredKey,
+      });
+    }
+  };
+
+  // 编辑当前供应商的 API Key：同步写入 apiKey 与 apiKeys[provider]
+  const handleApiKeyChange = (value: string) => {
+    setConfig({
+      apiKey: value,
+      apiKeys: { ...config.apiKeys, [config.provider]: value },
+    });
+  };
+
+  const isCustom = config.provider === "custom";
+  const currentPreset = getProviderPreset(config.provider);
+
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-line px-3 py-2">
@@ -122,16 +163,57 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           ) : null}
 
           <Field
-            label="API Base URL"
-            htmlFor="baseUrl"
-            hint="兼容 OpenAI Chat Completions 的接口地址"
+            label="模型供应商"
+            htmlFor="provider"
+            hint="选择内置供应商后无需填写 Base URL 与模型名称"
           >
-            <Input
-              id="baseUrl"
-              value={config.baseUrl}
-              onChange={(e) => setConfig({ baseUrl: e.target.value })}
-              placeholder="https://api.openai.com/v1"
-            />
+            <select
+              id="provider"
+              value={config.provider}
+              onChange={(e) =>
+                handleProviderChange(e.target.value as ModelProvider)
+              }
+              className="input"
+            >
+              {MODEL_PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          {/* 模型名称：内置供应商用下拉选择，自定义用文本输入 */}
+          <Field
+            label="模型名称"
+            htmlFor="model"
+            hint={
+              isCustom
+                ? "兼容 OpenAI Chat Completions 的模型 ID"
+                : "从该供应商的内置模型中选择"
+            }
+          >
+            {isCustom ? (
+              <Input
+                id="model"
+                value={config.model}
+                onChange={(e) => setConfig({ model: e.target.value })}
+                placeholder="gpt-4o-mini"
+              />
+            ) : (
+              <select
+                id="model"
+                value={config.model}
+                onChange={(e) => setConfig({ model: e.target.value })}
+                className="input"
+              >
+                {currentPreset?.models.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            )}
           </Field>
 
           <Field
@@ -144,7 +226,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
                 id="apiKey"
                 type={showKey ? "text" : "password"}
                 value={config.apiKey}
-                onChange={(e) => setConfig({ apiKey: e.target.value })}
+                onChange={(e) => handleApiKeyChange(e.target.value)}
                 placeholder="sk-..."
                 className="pr-10"
               />
@@ -163,14 +245,21 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
           </Field>
 
-          <Field label="模型名称" htmlFor="model" hint="例如 gpt-4o-mini">
-            <Input
-              id="model"
-              value={config.model}
-              onChange={(e) => setConfig({ model: e.target.value })}
-              placeholder="gpt-4o-mini"
-            />
-          </Field>
+          {/* Base URL：仅自定义供应商时显示并允许编辑 */}
+          {isCustom ? (
+            <Field
+              label="API Base URL"
+              htmlFor="baseUrl"
+              hint="兼容 OpenAI Chat Completions 的接口地址"
+            >
+              <Input
+                id="baseUrl"
+                value={config.baseUrl}
+                onChange={(e) => setConfig({ baseUrl: e.target.value })}
+                placeholder="https://api.openai.com/v1"
+              />
+            </Field>
+          ) : null}
 
           <Field
             label="全局快捷键"
@@ -238,6 +327,19 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           </div>
 
           <div className="space-y-3 rounded-lg border border-line bg-surface-soft/40 px-3 py-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-medium text-ink">启用思考模式</p>
+                <p className="text-xs text-ink-muted">
+                  关闭（默认）省 token、更快；开启可在复杂语境下提升译文质量
+                </p>
+              </div>
+              <Switch
+                checked={config.enableThinking}
+                onCheckedChange={(v) => setConfig({ enableThinking: v })}
+                aria-label="启用思考模式"
+              />
+            </div>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-ink">自动隐藏窗口</p>

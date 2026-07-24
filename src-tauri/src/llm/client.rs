@@ -1,9 +1,10 @@
 use std::time::Duration;
 
 use crate::app_error::{AppError, AppResult};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ModelProvider};
 use crate::llm::error::{
     map_response_parse_error, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+    ThinkingConfig,
 };
 use crate::llm::models::{TranslationRequest, TranslationResult};
 use crate::llm::prompt::build_system_prompt;
@@ -76,7 +77,27 @@ pub async fn translate(
 }
 
 /// 构建 OpenAI-compatible 请求体
+/// 思考模式由 `config.enable_thinking` 控制：
+/// - false（默认，翻译场景）：注入关闭思考参数，省 token、降延迟
+///   · DeepSeek / GLM / Kimi：`thinking: {type: "disabled"}`
+///   · Qwen：`enable_thinking: false`
+///   · Agnes / DouBao / Custom：不注入（DouBao 靠选非 thinking 模型）
+/// - true：不注入任何参数，保留各供应商默认思考行为
 fn build_request(config: &AppConfig, request: &TranslationRequest) -> ChatCompletionRequest {
+    // 仅当用户关闭思考时注入关闭参数；开启时留空走供应商默认
+    let (thinking, enable_thinking) = if config.enable_thinking {
+        (None, None)
+    } else {
+        match config.provider {
+            ModelProvider::Deepseek | ModelProvider::Glm | ModelProvider::Kimi => {
+                (Some(ThinkingConfig::disabled()), None)
+            }
+            ModelProvider::Qwen => (None, Some(false)),
+            // Agnes / DouBao / Custom：不支持或不需要关闭参数
+            _ => (None, None),
+        }
+    };
+
     ChatCompletionRequest {
         model: config.model.clone(),
         messages: vec![
@@ -91,6 +112,8 @@ fn build_request(config: &AppConfig, request: &TranslationRequest) -> ChatComple
         ],
         temperature: Some(0.2),
         stream: Some(false),
+        thinking,
+        enable_thinking,
     }
 }
 

@@ -39,7 +39,7 @@
 ### 方式一：使用安装包
 
 1. 从 [Releases](../../releases) 下载最新安装包：
-   - `easyT_0.1.0_x64-setup.exe`（NSIS 安装程序）
+   - `easyT_0.1.0_x64-setup.exe`（NSIS 安装程序，**推荐**）
    - 或 `easyT_0.1.0_x64_en-US.msi`（MSI 安装包）
 2. 双击运行安装
 3. 安装完成后从开始菜单启动 easyT

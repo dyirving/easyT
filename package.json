@@ -1,7 +1,7 @@
 {
   "name": "easyt",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "easyT - 轻量级 Windows 桌面划词翻译应用原型",
   "scripts": {

@@ -94,10 +94,9 @@ npm run tauri dev
 
 采用原子写入（先写 `.tmp` 再 rename），写入中断时回退默认值，不阻塞启动。
 
-### ⚠️ API Key 安全提示
+###  API Key 安全提示
 
-原型阶段 API Key 暂存于本地 JSON 文件（`config.json`），**存在安全风险**。请勿在公共机器或共享环境中配置真实 Key。正式版将切换到系统凭据存储（Windows Credential Manager）。
-
+API Key 存于本地 JSON 文件（`config.json`），**存在安全风险**。请勿在公共机器或共享环境中配置真实 Key。
 ## 快捷键
 
 | 快捷键 | 作用 |

@@ -5,19 +5,11 @@ import { TranslationPage } from "@/pages/TranslationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
-import {
-  captureSelectedText,
-  getConfig,
-  positionWindowNearMouse,
-  toCommandError,
-  translateText,
-} from "@/services/tauriCommands";
+import { getConfig, toCommandError } from "@/services/tauriCommands";
+import { startShortcutTranslation } from "@/services/translationCoordinator";
 
 type Route = "translation" | "settings";
 
-// 模块级 in-flight 标志：防止用户连按快捷键触发并发翻译
-// 重入时直接丢弃后续请求，让正在进行的请求完成
-let shortcutInFlight = false;
 let suppressAutoHideUntil = 0;
 
 const markDragRegionPointerDown = () => {
@@ -59,7 +51,7 @@ export default function App() {
       listen("tray://show", () => setRoute("translation")),
       // 全局快捷键触发：捕获选中文本 → 调用翻译 → 显示窗口展示结果
       listen("shortcut://translate", () => {
-        void handleShortcutTranslate();
+        startShortcutTranslation(setRoute);
       }),
     ]).then((fns) => {
       if (cancelled) {
@@ -74,88 +66,6 @@ export default function App() {
       unlisteners.forEach((f) => f());
     };
   }, []);
-
-  // 全局快捷键触发的完整翻译流程：
-  // 1. 切到翻译页 + 重置旧状态（保留 pinned） + 进入 capturing
-  // 2. 阶段8：把窗口重新定位到鼠标附近（pinned=true 时跳过，但不抢焦点）
-  // 3. captureSelectedText 在原应用仍有焦点时取得选中文本
-  // 4. 显示窗口并获取焦点（让用户看到原文与翻译进度）
-  // 5. translateText 调大模型翻译
-  // 6. 按最新 requestId 写回结果，避免并发覆盖
-  const handleShortcutTranslate = async () => {
-    // 阶段9：防止重复请求。若上一次快捷键翻译仍在进行中，直接丢弃本次触发
-    if (shortcutInFlight) {
-      console.debug("[easyT] 上一次翻译仍在进行，丢弃本次快捷键触发");
-      return;
-    }
-    shortcutInFlight = true;
-    try {
-      await runShortcutTranslate();
-    } finally {
-      shortcutInFlight = false;
-    }
-  };
-
-  // 实际执行快捷键翻译流程（被 handleShortcutTranslate 包裹 in-flight 守卫）
-  const runShortcutTranslate = async () => {
-    setRoute("translation");
-    const store = useTranslationStore.getState();
-    store.reset();
-    store.setStatus("capturing");
-
-    const showWindow = async () => {
-      try {
-        const win = getCurrentWindow();
-        await win.show();
-        await win.setFocus();
-      } catch (e) {
-        console.warn("[easyT] 显示窗口失败:", e);
-      }
-    };
-
-    // 阶段8：只移动窗口，不显示/聚焦，避免破坏原应用中的文本选区
-    // pinned=true 时 Rust 端会跳过重新定位，保持当前位置
-    try {
-      await positionWindowNearMouse(store.pinned);
-    } catch (e) {
-      // 定位失败不阻断流程，仅记录
-      console.warn("[easyT] 重新定位窗口失败:", e);
-    }
-
-    // 捕获选中文本
-    let text: string;
-    try {
-      text = await captureSelectedText();
-    } catch (e) {
-      const err = toCommandError(e);
-      await showWindow();
-      const s = useTranslationStore.getState();
-      s.setStatus("error");
-      s.setError(err.message, err.kind);
-      return;
-    }
-
-    await showWindow();
-
-    // 调用翻译
-    const { config } = useSettingsStore.getState();
-    const requestId = store.startRequest(text);
-    try {
-      const result = await translateText({
-        text,
-        targetLanguage: config.targetLanguage,
-      });
-      // 仅最新请求可更新结果（防止并发覆盖）
-      if (useTranslationStore.getState().requestId !== requestId) return;
-      store.setTranslatedText(result.translatedText);
-      store.setStatus("success");
-    } catch (e) {
-      if (useTranslationStore.getState().requestId !== requestId) return;
-      const err = toCommandError(e);
-      store.setStatus("error");
-      store.setError(err.message, err.kind);
-    }
-  };
 
   // 监听窗口失焦：非固定状态下根据 autoHide 隐藏
   useEffect(() => {

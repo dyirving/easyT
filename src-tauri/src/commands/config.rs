@@ -9,12 +9,14 @@ use tauri::{AppHandle, State};
 /// 后续阶段（快捷键、窗口固定）会从这里读取，避免每次都解析文件
 pub struct AppState {
     pub config: Mutex<AppConfig>,
+    save_lock: Mutex<()>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         Self {
             config: Mutex::new(config),
+            save_lock: Mutex::new(()),
         }
     }
 
@@ -44,35 +46,78 @@ pub async fn get_config(state: State<'_, AppState>) -> AppResult<AppConfig> {
     state.snapshot()
 }
 
-/// 保存配置
-/// 流程：校验 → 持久化到文件 → 更新内存状态 → 快捷键变更则重新注册
-/// 校验失败时不修改原文件与内存状态
+/// 保存配置。
+/// 快捷键变更时使用可回滚替换流程，避免持久化状态与实际快捷键不一致。
 #[tauri::command]
 pub async fn save_config(
     app: AppHandle,
     state: State<'_, AppState>,
     config: AppConfig,
 ) -> AppResult<()> {
-    // 1. 校验
+    let _save_guard = state
+        .save_lock
+        .lock()
+        .map_err(|e| AppError::Internal(format!("配置保存锁获取失败: {e}")))?;
+
     validate_config(&config)?;
-    // 2. 检测快捷键是否变更
-    let old_shortcut = state.snapshot().map(|c| c.shortcut).unwrap_or_default();
+
+    let old_config = state.snapshot()?;
+    let old_shortcut = old_config.shortcut.clone();
     let shortcut_changed = old_shortcut != config.shortcut;
-    // 3. 持久化到磁盘
-    persist_config(&app, &config)?;
-    // 4. 更新内存状态
-    state.update(config)?;
-    // 5. 快捷键变更：重新注册
-    if shortcut_changed {
-        let new_shortcut = state.snapshot()?.shortcut;
-        if let Err(e) = shortcut::register(&app, &new_shortcut) {
-            // 注册失败不阻断保存流程，但返回警告给前端
-            log::warn!("快捷键重新注册失败: {e}");
-            return Err(e);
+
+    let replacement = if shortcut_changed {
+        Some(shortcut::prepare_replacement(&app, &config.shortcut)?)
+    } else {
+        None
+    };
+
+    if let Err(e) = persist_config(&app, &config) {
+        if let Some(replacement) = replacement {
+            if let Err(rollback_err) = shortcut::rollback_replacement(&app, replacement) {
+                return Err(AppError::Internal(format!(
+                    "配置持久化失败: {e}; 快捷键回滚也失败: {rollback_err}"
+                )));
+            }
         }
+        return Err(e);
     }
+
+    if let Err(e) = state.update(config) {
+        let rollback_error = replacement
+            .and_then(|replacement| shortcut::rollback_replacement(&app, replacement).err());
+        let restore_error = persist_config(&app, &old_config).err();
+        return Err(combine_compensation_errors(
+            e,
+            rollback_error,
+            restore_error,
+        ));
+    }
+
+    if let Some(replacement) = replacement {
+        shortcut::commit_replacement(&app, replacement);
+    }
+
     log::info!("配置已保存");
     Ok(())
+}
+
+fn combine_compensation_errors(
+    primary: AppError,
+    rollback_error: Option<AppError>,
+    restore_error: Option<AppError>,
+) -> AppError {
+    if rollback_error.is_none() && restore_error.is_none() {
+        return primary;
+    }
+
+    let mut details = vec![format!("配置内存更新失败: {primary}")];
+    if let Some(e) = rollback_error {
+        details.push(format!("快捷键回滚也失败: {e}"));
+    }
+    if let Some(e) = restore_error {
+        details.push(format!("恢复旧配置文件也失败: {e}"));
+    }
+    AppError::Internal(details.join("; "))
 }
 
 /// 校验配置
@@ -97,4 +142,32 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
         return Err(AppError::ConfigInvalid("快捷键不能为空".to_string()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::combine_compensation_errors;
+    use crate::app_error::AppError;
+
+    #[test]
+    fn compensation_error_reports_every_failed_action() {
+        let error = combine_compensation_errors(
+            AppError::Internal("更新失败".to_string()),
+            Some(AppError::ShortcutRegistrationFailed("回滚失败".to_string())),
+            Some(AppError::Internal("恢复失败".to_string())),
+        );
+        let message = error.to_string();
+
+        assert!(message.contains("更新失败"));
+        assert!(message.contains("回滚失败"));
+        assert!(message.contains("恢复失败"));
+    }
+
+    #[test]
+    fn compensation_error_preserves_primary_when_cleanup_succeeds() {
+        let error =
+            combine_compensation_errors(AppError::Internal("更新失败".to_string()), None, None);
+
+        assert_eq!(error.to_string(), "内部错误: 更新失败");
+    }
 }

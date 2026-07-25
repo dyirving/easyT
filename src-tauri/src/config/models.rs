@@ -109,8 +109,14 @@ mod tests {
         let cfg: AppConfig = serde_json::from_str(json).expect("camelCase config should parse");
 
         assert_eq!(cfg.provider, ModelProvider::Deepseek);
-        assert_eq!(cfg.api_keys.get("deepseek").map(String::as_str), Some("sk-deepseek-key"));
-        assert_eq!(cfg.api_keys.get("agnes").map(String::as_str), Some("sk-agnes-key"));
+        assert_eq!(
+            cfg.api_keys.get("deepseek").map(String::as_str),
+            Some("sk-deepseek-key")
+        );
+        assert_eq!(
+            cfg.api_keys.get("agnes").map(String::as_str),
+            Some("sk-agnes-key")
+        );
         assert_eq!(cfg.base_url, "https://api.deepseek.com/v1");
         assert_eq!(cfg.api_key, "sk-deepseek-key");
         assert_eq!(cfg.model, "deepseek-chat");

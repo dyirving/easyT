@@ -9,8 +9,7 @@ use commands::{
     clipboard::copy_translation,
     config::{get_config, save_config, AppState},
     selection::capture_selected_text,
-    shortcut::{get_current_shortcut, register_shortcut, unregister_all_shortcuts},
-    translate::{test_api_connection, translate_text},
+    translate::{test_api_connection, translate_text, TranslationRequestManager},
     window::{
         hide_translation_window, position_window_near_mouse, set_window_pinned,
         show_translation_window,
@@ -56,6 +55,7 @@ pub fn run() {
             // 快捷键副本用于初始化全局快捷键
             let shortcut_str = config.shortcut.clone();
             app.manage(AppState::new(config));
+            app.manage(TranslationRequestManager::new());
 
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.show();
@@ -98,9 +98,6 @@ pub fn run() {
             set_window_pinned,
             position_window_near_mouse,
             copy_translation,
-            register_shortcut,
-            unregister_all_shortcuts,
-            get_current_shortcut,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -137,6 +134,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             }
             "quit" => {
                 let _ = app.emit(TRAY_EVENT_QUIT, ());
+                if let Err(e) = shortcut::unregister_all(app) {
+                    log::warn!("退出前注销快捷键失败: {e}");
+                }
                 app.exit(0);
             }
             _ => {}

@@ -8,36 +8,57 @@ use crate::app_error::{AppError, AppResult};
 /// 快捷键触发事件名（前端监听此事件触发翻译流程）
 pub const SHORTCUT_EVENT_TRANSLATE: &str = "shortcut://translate";
 
-/// 全局快捷键管理器：保存当前已注册的快捷键（原始字符串 + 解析后的 Shortcut）
-/// 保存字符串便于前端展示与判断是否变更
+#[derive(Default)]
+struct ShortcutState {
+    current_sc: Option<Shortcut>,
+    stale_scs: Vec<Shortcut>,
+}
+
+/// 全局快捷键管理器。
+/// 当前快捷键与待清理快捷键属于同一个不变量，必须由同一把锁保护。
 pub struct ShortcutManager {
-    current_str: Mutex<Option<String>>,
-    current_sc: Mutex<Option<Shortcut>>,
+    state: Mutex<ShortcutState>,
 }
 
 impl ShortcutManager {
     pub fn new() -> Self {
         Self {
-            current_str: Mutex::new(None),
-            current_sc: Mutex::new(None),
+            state: Mutex::new(ShortcutState::default()),
         }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ShortcutState> {
+        self.state.lock().unwrap_or_else(|poisoned| {
+            log::warn!("快捷键状态锁曾发生 panic，继续使用锁内状态");
+            poisoned.into_inner()
+        })
     }
 
     fn current_sc(&self) -> Option<Shortcut> {
-        self.current_sc.lock().ok().and_then(|g| g.clone())
+        self.lock().current_sc
     }
 
-    fn current_str(&self) -> Option<String> {
-        self.current_str.lock().ok().and_then(|g| g.clone())
+    fn set_current(&self, sc: Option<Shortcut>) {
+        let mut g = self.lock();
+        g.current_sc = sc;
     }
 
-    fn set_current(&self, sc: Option<Shortcut>, s: Option<String>) {
-        if let Ok(mut g) = self.current_sc.lock() {
-            *g = sc;
-        }
-        if let Ok(mut g) = self.current_str.lock() {
-            *g = s;
-        }
+    fn add_stale(&self, sc: Shortcut) {
+        self.lock().stale_scs.push(sc);
+    }
+
+    fn tracked_shortcuts(&self) -> Vec<Shortcut> {
+        let g = self.lock();
+        g.current_sc
+            .into_iter()
+            .chain(g.stale_scs.iter().copied())
+            .collect()
+    }
+
+    fn retain_cleanup_failures(&self, failed: Vec<Shortcut>) {
+        let mut g = self.lock();
+        g.current_sc = None;
+        g.stale_scs = failed;
     }
 }
 
@@ -152,55 +173,101 @@ fn parse_code(name: &str) -> AppResult<tauri_plugin_global_shortcut::Code> {
     Ok(code)
 }
 
-/// 注册快捷键：先注销旧的，再注册新的
-/// 失败时不影响旧快捷键（保持原状态）
-pub fn register(app: &AppHandle, shortcut_str: &str) -> AppResult<()> {
-    let new_sc = parse_shortcut(shortcut_str)?;
-    let state = app.state::<ShortcutManager>();
-
-    // 1. 注销旧的（如果存在）
-    if let Some(old) = state.current_sc() {
-        if let Err(e) = app.global_shortcut().unregister(old) {
-            log::warn!("注销旧快捷键失败: {e}");
-        }
-    }
-
-    // 2. 注册新的
-    let app_clone = app.clone();
-    let handler = move |_app: &AppHandle, _sc: &Shortcut, event: ShortcutEvent| {
-        // 只处理按下事件（避免按下+释放都触发）
+fn shortcut_handler(
+    app: AppHandle,
+) -> impl Fn(&AppHandle, &Shortcut, ShortcutEvent) + Send + Sync + 'static {
+    move |_app: &AppHandle, _sc: &Shortcut, event: ShortcutEvent| {
         if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
             log::info!("快捷键触发");
-            let _ = app_clone.emit(SHORTCUT_EVENT_TRANSLATE, ());
-        }
-    };
-
-    match app.global_shortcut().on_shortcut(new_sc, handler) {
-        Ok(()) => {
-            state.set_current(Some(new_sc), Some(shortcut_str.to_string()));
-            log::info!("已注册快捷键: {shortcut_str}");
-            Ok(())
-        }
-        Err(e) => {
-            // 注册失败：尝试恢复旧的（如果之前有）
-            if let Some(old) = state.current_sc() {
-                let _ = app.global_shortcut().on_shortcut(old, |_, _, _| {});
-            }
-            Err(AppError::ShortcutRegistrationFailed(format!(
-                "注册快捷键失败: {e}（可能已被其他应用占用）"
-            )))
+            let _ = app.emit(SHORTCUT_EVENT_TRANSLATE, ());
         }
     }
+}
+
+pub struct ShortcutReplacement {
+    old_sc: Option<Shortcut>,
+    new_sc: Shortcut,
+    new_str: String,
+}
+
+/// 预注册新快捷键，但暂不修改当前状态，也不注销旧快捷键。
+pub fn prepare_replacement(app: &AppHandle, shortcut_str: &str) -> AppResult<ShortcutReplacement> {
+    let state = app.state::<ShortcutManager>();
+    let old_sc = state.current_sc();
+    let new_sc = parse_shortcut(shortcut_str)?;
+
+    match app
+        .global_shortcut()
+        .on_shortcut(new_sc, shortcut_handler(app.clone()))
+    {
+        Ok(()) => Ok(ShortcutReplacement {
+            old_sc,
+            new_sc,
+            new_str: shortcut_str.to_string(),
+        }),
+        Err(e) => Err(AppError::ShortcutRegistrationFailed(format!(
+            "注册快捷键失败: {e}（可能已被其他应用占用）"
+        ))),
+    }
+}
+
+/// 提交快捷键替换：更新当前状态，并尽量注销旧快捷键。
+/// 状态提交本身不会失败；旧快捷键注销失败时保留追踪，供退出时重试。
+pub fn commit_replacement(app: &AppHandle, replacement: ShortcutReplacement) {
+    let state = app.state::<ShortcutManager>();
+    state.set_current(Some(replacement.new_sc));
+
+    if let Some(old) = replacement.old_sc {
+        if let Err(e) = app.global_shortcut().unregister(old) {
+            log::warn!("注销旧快捷键失败，将在退出时继续清理: {e}");
+            state.add_stale(old);
+        }
+    }
+
+    log::info!("已注册快捷键: {}", replacement.new_str);
+}
+
+/// 放弃快捷键替换：注销预注册的新快捷键，保留旧快捷键状态。
+pub fn rollback_replacement(app: &AppHandle, replacement: ShortcutReplacement) -> AppResult<()> {
+    if let Err(e) = app.global_shortcut().unregister(replacement.new_sc) {
+        log::warn!("回滚新快捷键失败: {e}");
+        app.state::<ShortcutManager>().add_stale(replacement.new_sc);
+        return Err(AppError::ShortcutRegistrationFailed(format!(
+            "回滚新快捷键失败: {e}"
+        )));
+    }
+    Ok(())
+}
+
+/// 注册快捷键：用于启动初始化等无外部事务场景。
+pub fn register(app: &AppHandle, shortcut_str: &str) -> AppResult<()> {
+    let replacement = prepare_replacement(app, shortcut_str)?;
+    commit_replacement(app, replacement);
+    Ok(())
 }
 
 /// 注销所有已注册的快捷键
 pub fn unregister_all(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<ShortcutManager>();
-    if let Some(old) = state.current_sc() {
-        let _ = app.global_shortcut().unregister(old);
-        state.set_current(None, None);
+    let mut failed = Vec::new();
+    let mut errors = Vec::new();
+
+    for sc in state.tracked_shortcuts() {
+        if let Err(e) = app.global_shortcut().unregister(sc) {
+            failed.push(sc);
+            errors.push(e.to_string());
+        }
     }
-    Ok(())
+    state.retain_cleanup_failures(failed);
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::ShortcutRegistrationFailed(format!(
+            "注销快捷键失败: {}",
+            errors.join("; ")
+        )))
+    }
 }
 
 /// 初始化快捷键插件并注册默认快捷键
@@ -216,9 +283,26 @@ pub fn init(app: &AppHandle, default_shortcut: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// 查询当前已注册的快捷键字符串
-/// 用于前端显示与设置页初始化
-pub fn current_shortcut_str(app: &AppHandle) -> Option<String> {
-    let state = app.state::<ShortcutManager>();
-    state.current_str()
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri_plugin_global_shortcut::{Code, Modifiers};
+
+    fn shortcut(code: Code) -> Shortcut {
+        Shortcut::new(Some(Modifiers::CONTROL), code)
+    }
+
+    #[test]
+    fn cleanup_failures_remain_tracked_as_stale() {
+        let manager = ShortcutManager::new();
+        let current = shortcut(Code::KeyT);
+        let stale = shortcut(Code::KeyY);
+        manager.set_current(Some(current));
+        manager.add_stale(stale);
+
+        manager.retain_cleanup_failures(vec![current]);
+
+        assert_eq!(manager.current_sc(), None);
+        assert_eq!(manager.tracked_shortcuts(), vec![current]);
+    }
 }

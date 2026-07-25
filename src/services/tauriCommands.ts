@@ -75,7 +75,7 @@ export async function testApiConnection(
 }
 
 /**
- * 以下为窗口/快捷键相关命令，第一轮暂不调用，签名已对齐
+ * 以下为窗口相关命令
  */
 export async function showTranslationWindow(): Promise<void> {
   await invoke<void>("show_translation_window");
@@ -96,9 +96,6 @@ export async function positionWindowNearMouse(pinned: boolean): Promise<void> {
 }
 export async function copyTranslation(text: string): Promise<void> {
   await invoke<void>("copy_translation", { text });
-}
-export async function registerShortcut(shortcut: string): Promise<void> {
-  await invoke<void>("register_shortcut", { shortcut });
 }
 
 /**

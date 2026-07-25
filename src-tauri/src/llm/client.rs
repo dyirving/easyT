@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use crate::app_error::{AppError, AppResult};
@@ -8,6 +9,12 @@ use crate::llm::error::{
 };
 use crate::llm::models::{TranslationRequest, TranslationResult};
 use crate::llm::prompt::build_system_prompt;
+
+static HTTP_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http_client() -> AppResult<&'static reqwest::Client> {
+    Ok(HTTP_CLIENT.get_or_init(reqwest::Client::new))
+}
 
 /// 大模型翻译入口
 /// 调用 OpenAI-compatible Chat Completions API
@@ -29,12 +36,9 @@ pub async fn translate(
     let body = build_request(config, &request);
     let url = format!("{}/chat/completions", normalize_base_url(&config.base_url));
 
-    // 3. 构建 HTTP 客户端（带超时）
+    // 3. 发起请求（复用连接池，单次请求保留配置超时）
     let timeout = config.timeout_seconds.clamp(5, 300);
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(timeout))
-        .build()
-        .map_err(|e| AppError::Internal(format!("HTTP 客户端构建失败: {e}")))?;
+    let client = http_client()?;
 
     // 日志只记录非敏感字段，绝不记录 api_key
     log::info!(
@@ -44,10 +48,10 @@ pub async fn translate(
         request.text.chars().count()
     );
 
-    // 4. 发起请求
     let resp = client
         .post(&url)
         .bearer_auth(&config.api_key)
+        .timeout(Duration::from_secs(timeout))
         .json(&body)
         .send()
         .await

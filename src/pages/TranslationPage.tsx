@@ -33,9 +33,8 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     errorKind,
     pinned,
     startRequest,
-    setTranslatedText,
-    setStatus,
-    setError,
+    succeedRequest,
+    failRequest,
     togglePinned,
   } = useTranslationStore();
   const { config } = useSettingsStore();
@@ -50,31 +49,35 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
   // 触发一次翻译
   // config 由 Rust 端从 AppState 读取，前端只校验本地配置中的 maxTextLength 用于预拦截
   const handleTranslate = async (text: string) => {
+    const requestId = startRequest(text);
+
     if (!text.trim()) {
-      setStatus("error");
-      setError("未检测到选中文本，请在其他应用中选中英文后再按快捷键。", "NoSelectedText");
+      failRequest(
+        requestId,
+        "未检测到选中文本，请在其他应用中选中英文后再按快捷键。",
+        "NoSelectedText",
+      );
       return;
     }
     if (text.length > config.maxTextLength) {
-      setStatus("error");
-      setError(`文本过长（${text.length} 字符），已超过配置上限 ${config.maxTextLength}。`, "TextTooLong");
+      failRequest(
+        requestId,
+        `文本过长（${text.length} 字符），已超过配置上限 ${config.maxTextLength}。`,
+        "TextTooLong",
+        text,
+      );
       return;
     }
-    const requestId = startRequest(text);
+
     try {
       const result = await translateText({
         text,
         targetLanguage: config.targetLanguage,
       });
-      // 仅最新请求可更新结果（防止并发覆盖）
-      if (useTranslationStore.getState().requestId !== requestId) return;
-      setTranslatedText(result.translatedText);
-      setStatus("success");
+      succeedRequest(requestId, result.translatedText);
     } catch (e) {
-      if (useTranslationStore.getState().requestId !== requestId) return;
-      setStatus("error");
       const err = toCommandError(e);
-      setError(err.message, err.kind);
+      failRequest(requestId, err.message, err.kind, text);
     }
   };
 

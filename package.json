@@ -1,7 +1,7 @@
 {
   "name": "easyt",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "easyT - 轻量级 Windows 桌面划词翻译应用原型",
   "scripts": {
@@ -14,7 +14,6 @@
   "dependencies": {
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-global-shortcut": "^2.3.2",
-    "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "katex": "^0.18.1",
     "lucide-react": "^0.456.0",

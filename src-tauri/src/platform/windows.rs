@@ -20,9 +20,6 @@ pub struct ScreenRect {
     pub bottom: i32,
 }
 
-/// 模拟 Ctrl+C 复制选中文本
-/// enigo 0.2 API：Keyboard trait 的 key(Key, Direction) -> InputResult<()>
-/// Key::C 是 Windows-only 变体（仅在 windows.rs 内编译，受 cfg 保护）
 pub fn simulate_copy() -> AppResult<()> {
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| AppError::Internal(format!("Enigo 初始化失败: {e}")))?;
@@ -72,43 +69,37 @@ pub fn write_clipboard_text(app: &AppHandle, text: &str) -> AppResult<()> {
         .map_err(|e| AppError::ClipboardError(format!("写入剪贴板失败: {e}")))
 }
 
-/// 捕获当前选中的文本
-/// 流程：
-/// 1. 保存当前剪贴板内容（用于恢复）
-/// 2. 清空剪贴板
-/// 3. 模拟 Ctrl+C 触发系统复制
-/// 4. 等待系统把选中内容写入剪贴板
-/// 5. 读取剪贴板文本
-/// 6. 恢复原剪贴板内容
-/// 7. 返回捕获到的文本
-///
-/// 注意：此函数会暂时占用剪贴板，调用方应确保调用期间用户不会主动复制其他内容
+fn wait_for_clipboard_text(app: &AppHandle) -> AppResult<String> {
+    const MAX_WAIT: Duration = Duration::from_millis(350);
+    const POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+    let deadline = std::time::Instant::now() + MAX_WAIT;
+    loop {
+        let text = read_clipboard_text(app)?;
+        if !text.is_empty() || std::time::Instant::now() >= deadline {
+            return Ok(text);
+        }
+        thread::sleep(POLL_INTERVAL);
+    }
+}
+
+/// 捕获当前选中的文本。
+/// 会短暂占用文本剪贴板，并在读取后尽量恢复原文本内容。
 pub fn capture_selection(app: &AppHandle) -> AppResult<String> {
-    // 1. 保存当前剪贴板内容
     let original = app.clipboard().read_text().ok();
 
-    // 2. 清空剪贴板（写入空字符串），以便后面判断是否真的有新内容
     let _ = app.clipboard().write_text("");
 
-    // 3. 模拟 Ctrl+C
     simulate_copy()?;
 
-    // 4. 等待系统把选中内容写入剪贴板
-    // 50ms 通常足够；某些慢应用可能需要更长，但太长会影响用户体验
-    thread::sleep(Duration::from_millis(50));
+    let text = wait_for_clipboard_text(app)?;
 
-    // 5. 读取剪贴板文本
-    let text = read_clipboard_text(app)?;
-
-    // 6. 恢复原剪贴板内容
-    // 恢复失败不阻断流程，仅记录日志
     if let Some(orig) = original {
         if let Err(e) = app.clipboard().write_text(&orig) {
             log::warn!("恢复剪贴板内容失败: {e}");
         }
     }
 
-    // 7. 返回结果
     Ok(text)
 }
 
@@ -146,7 +137,7 @@ pub fn get_monitor_work_area(point: (i32, i32)) -> AppResult<ScreenRect> {
     let ok = unsafe { GetMonitorInfoW(monitor, &mut info) };
     // windows-sys 中 BOOL 是 i32；非 0 表示成功
     if ok == 0 {
-        return Err(AppError::Internal(format!("GetMonitorInfoW 失败")));
+        return Err(AppError::Internal("GetMonitorInfoW 失败".to_string()));
     }
 
     let rc = info.rcWork;

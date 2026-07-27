@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::translation_backend::models::{BackendMode, WebProviderKind};
+
 /// 模型供应商标识
 /// - agnes / deepseek / qwen / glm / kimi / doubao：内置供应商，Base URL 与模型由前端常量维护
 /// - custom：自定义供应商，用户自行填写 Base URL 与模型名称
@@ -27,6 +29,49 @@ impl Default for ModelProvider {
         ModelProvider::Custom
     }
 }
+
+/// WebGateway 配置（实验功能）
+/// - provider：第一版仅 Qwen
+/// - model：必须来自内部允许列表，不接受任意字符串
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebGatewayConfig {
+    #[serde(default = "default_web_provider")]
+    pub provider: WebProviderKind,
+    #[serde(default = "default_qwen_model")]
+    pub model: String,
+    /// 是否让 Qwen 将翻译请求保存到网页端会话历史。
+    #[serde(default)]
+    pub save_history: bool,
+}
+
+impl Default for WebGatewayConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_web_provider(),
+            model: default_qwen_model(),
+            save_history: false,
+        }
+    }
+}
+
+fn default_web_provider() -> WebProviderKind {
+    WebProviderKind::Qwen
+}
+
+/// 默认 Qwen 模型：与千问官网当前默认选项保持一致
+fn default_qwen_model() -> String {
+    "Qwen3.7-Max".to_string()
+}
+
+/// Qwen WebGateway 允许的模型白名单
+/// 第一版不接受任意字符串，必须从此列表中选取
+pub const QWEN_ALLOWED_MODELS: &[&str] = &[
+    "Qwen",
+    "Qwen3.8-Max-Preview",
+    "Qwen3.7-Max",
+    "Qwen3.6-Flash",
+];
 
 /// 应用配置，与前端 types/index.ts 中的 AppConfig 对齐
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -63,6 +108,14 @@ pub struct AppConfig {
     pub pinned_by_default: bool,
     #[serde(alias = "max_text_length")]
     pub max_text_length: usize,
+    /// 翻译后端选择
+    /// 旧配置文件缺失时默认 OfficialApi，保持行为不变
+    #[serde(default)]
+    pub backend_mode: BackendMode,
+    /// WebGateway 实验功能配置
+    /// 旧配置文件缺失时使用默认 Qwen + Qwen3.7-Max
+    #[serde(default)]
+    pub web_gateway: WebGatewayConfig,
 }
 
 /// 默认配置（函数形式，因为 String 无法在 const 中构造）
@@ -82,6 +135,8 @@ pub fn default_config() -> AppConfig {
         auto_hide: true,
         pinned_by_default: false,
         max_text_length: 5000,
+        backend_mode: BackendMode::OfficialApi,
+        web_gateway: WebGatewayConfig::default(),
     }
 }
 
@@ -122,6 +177,11 @@ mod tests {
         assert_eq!(cfg.model, "deepseek-chat");
         assert!(cfg.enable_thinking);
         assert_eq!(cfg.target_language, "简体中文");
+        // 旧配置文件缺失 backendMode/webGateway 时回退默认值
+        assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
+        assert_eq!(cfg.web_gateway.provider, WebProviderKind::Qwen);
+        assert_eq!(cfg.web_gateway.model, "Qwen3.7-Max");
+        assert!(!cfg.web_gateway.save_history);
     }
 
     #[test]
@@ -148,6 +208,8 @@ mod tests {
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
         assert_eq!(cfg.api_key, "sk-test");
         assert_eq!(cfg.model, "gpt-4o-mini");
+        // 旧配置文件无 backendMode 时默认 OfficialApi
+        assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
     }
 
     #[test]
@@ -160,6 +222,8 @@ mod tests {
         assert!(json.contains("apiKey"));
         assert!(json.contains("enableThinking"));
         assert!(json.contains("targetLanguage"));
+        assert!(json.contains("backendMode"));
+        assert!(json.contains("webGateway"));
         assert!(!json.contains("base_url"));
     }
 
@@ -171,5 +235,43 @@ mod tests {
         assert!(!cfg.enable_thinking);
         assert_eq!(cfg.base_url, "https://apihub.agnes-ai.com/v1");
         assert_eq!(cfg.model, "agnes-2.0-flash");
+        assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
+    }
+
+    #[test]
+    fn backend_mode_can_be_web_gateway() {
+        let json = r#"{
+            "provider": "agnes",
+            "apiKeys": {},
+            "baseUrl": "https://apihub.agnes-ai.com/v1",
+            "apiKey": "",
+            "model": "agnes-2.0-flash",
+            "enableThinking": false,
+            "shortcut": "Ctrl+T",
+            "targetLanguage": "简体中文",
+            "timeoutSeconds": 60,
+            "autoHide": true,
+            "pinnedByDefault": false,
+            "maxTextLength": 5000,
+            "backendMode": "webGateway",
+            "webGateway": { "provider": "qwen", "model": "Qwen3.6-Flash" }
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("parse");
+        assert_eq!(cfg.backend_mode, BackendMode::WebGateway);
+        assert_eq!(cfg.web_gateway.model, "Qwen3.6-Flash");
+        assert!(!cfg.web_gateway.save_history);
+    }
+
+    #[test]
+    fn qwen_model_allowlist_matches_current_web_models() {
+        assert_eq!(
+            QWEN_ALLOWED_MODELS,
+            &[
+                "Qwen",
+                "Qwen3.8-Max-Preview",
+                "Qwen3.7-Max",
+                "Qwen3.6-Flash",
+            ]
+        );
     }
 }

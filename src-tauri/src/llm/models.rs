@@ -1,13 +1,9 @@
-use serde::{Deserialize, Serialize};
+//! 翻译结果类型（保留旧路径以最小化前端破坏）
+//!
+//! TranslationResult 已迁到 translation_backend::models::BackendResult，
+//! 但 translate_text 命令继续返回简单 TranslationResult 结构以保持前端契约。
 
-/// 翻译请求
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TranslationRequest {
-    pub text: String,
-    #[serde(alias = "target_language")]
-    pub target_language: String,
-}
+use serde::{Deserialize, Serialize};
 
 /// 翻译结果
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,3 +1,7 @@
+//! 翻译 Prompt（Official API 与 WebGateway 共用）
+//!
+//! 纯逻辑模块：不持有状态，不读取配置，不发请求。
+
 /// 根据目标语言动态拼装系统提示词
 /// 与初始 prompt 文档中第 5 节保持一致
 pub fn build_system_prompt(target_language: &str) -> String {

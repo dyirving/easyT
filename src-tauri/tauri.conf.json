@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "easyT",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "identifier": "com.easyt.app",
   "build": {
     "frontendDist": "../dist",
@@ -10,25 +10,7 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [
-      {
-        "label": "main",
-        "title": "easyT",
-        "width": 520,
-        "height": 390,
-        "minWidth": 360,
-        "minHeight": 200,
-        "maxWidth": 900,
-        "maxHeight": 700,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": false,
-        "alwaysOnTop": true,
-        "skipTaskbar": true,
-        "visible": false,
-        "center": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

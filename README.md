@@ -87,12 +87,18 @@ npm run tauri dev
 
 ### 配置文件位置
 
-配置以 JSON 形式持久化在：
+应用自身的配置、窗口尺寸和开发日志都存放在可执行文件同级目录：
 ```
-%APPDATA%\com.easyt.app\config.json
+easyT_Data/
+├── config.json
+├── window-state.json
+├── webview/            # WebView2 的缓存、Cookie 等用户数据
+└── logs/               # 仅开发构建
 ```
 
 采用原子写入（先写 `.tmp` 再 rename），写入中断时回退默认值，不阻塞启动。
+
+> 安装到 `Program Files` 等受保护目录时，普通用户通常没有写入权限。若需要可移动数据，请安装到具备写权限的目录，或使用免安装版。
 
 ###  API Key 安全提示
 

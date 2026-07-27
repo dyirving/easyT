@@ -71,7 +71,7 @@ pub async fn save_config(
         None
     };
 
-    if let Err(e) = persist_config(&app, &config) {
+    if let Err(e) = persist_config(&config) {
         if let Some(replacement) = replacement {
             if let Err(rollback_err) = shortcut::rollback_replacement(&app, replacement) {
                 return Err(AppError::Internal(format!(
@@ -85,7 +85,7 @@ pub async fn save_config(
     if let Err(e) = state.update(config) {
         let rollback_error = replacement
             .and_then(|replacement| shortcut::rollback_replacement(&app, replacement).err());
-        let restore_error = persist_config(&app, &old_config).err();
+        let restore_error = persist_config(&old_config).err();
         return Err(combine_compensation_errors(
             e,
             rollback_error,
@@ -121,12 +121,29 @@ fn combine_compensation_errors(
 }
 
 /// 校验配置
+///
+/// WebGateway 模式下 Official API 相关字段（base_url、api_key、model）不再必需，
+/// 但仍校验其他通用字段。
 pub fn validate_config(config: &AppConfig) -> AppResult<()> {
-    if config.base_url.trim().is_empty() {
-        return Err(AppError::ConfigInvalid("Base URL 不能为空".to_string()));
-    }
-    if config.model.trim().is_empty() {
-        return Err(AppError::ConfigInvalid("模型名称不能为空".to_string()));
+    match config.backend_mode {
+        crate::translation_backend::models::BackendMode::OfficialApi => {
+            if config.base_url.trim().is_empty() {
+                return Err(AppError::ConfigInvalid("Base URL 不能为空".to_string()));
+            }
+            if config.model.trim().is_empty() {
+                return Err(AppError::ConfigInvalid("模型名称不能为空".to_string()));
+            }
+        }
+        crate::translation_backend::models::BackendMode::WebGateway => {
+            // WebGateway 模式不要求 Official API 字段
+            // 但 Qwen model 必须来自白名单
+            if !crate::config::QWEN_ALLOWED_MODELS.contains(&config.web_gateway.model.as_str()) {
+                return Err(AppError::ConfigInvalid(format!(
+                    "Qwen 模型不在允许列表内: {}",
+                    config.web_gateway.model
+                )));
+            }
+        }
     }
     if config.timeout_seconds < 5 || config.timeout_seconds > 300 {
         return Err(AppError::ConfigInvalid(

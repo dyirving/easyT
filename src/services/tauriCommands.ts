@@ -2,7 +2,13 @@
 // 通过 invoke 调用 Rust 后端命令
 // 翻译/捕获/快捷键/窗口相关命令在后续阶段接入真实逻辑
 import { invoke } from "@tauri-apps/api/core";
-import { type AppConfig, type ErrorKind, ERROR_KIND } from "@/types";
+import {
+  type AppConfig,
+  type ErrorKind,
+  type QwenSessionStatus,
+  type WebProviderKind,
+  ERROR_KIND,
+} from "@/types";
 
 /** 统一命令错误 */
 export interface CommandError {
@@ -72,6 +78,39 @@ export async function testApiConnection(
           : "连接失败",
     };
   }
+}
+
+// ===== WebGateway 登录管理 =====
+
+/**
+ * 启动 Qwen 网页登录流程
+ * 非阻塞：立即返回当前状态，不等待用户完成登录。
+ * 后台 watcher 会读取 tongyi_sso_ticket Cookie，找到后保存并切到 Ready。
+ */
+export async function beginWebLogin(
+  provider: WebProviderKind,
+): Promise<QwenSessionStatus> {
+  return invoke<QwenSessionStatus>("begin_web_login", { provider });
+}
+
+/**
+ * 查询当前登录状态
+ * 仅在 SettingsPage 可见且状态为 loggingIn 时每 1 秒调用一次
+ */
+export async function getWebLoginStatus(
+  provider: WebProviderKind,
+): Promise<QwenSessionStatus> {
+  return invoke<QwenSessionStatus>("get_web_login_status", { provider });
+}
+
+/**
+ * 退出登录：关闭登录窗口、取消 watcher、清除凭证与 profile
+ * 显式 destructive 操作，UI 应二次确认
+ */
+export async function logoutWebAccount(
+  provider: WebProviderKind,
+): Promise<QwenSessionStatus> {
+  return invoke<QwenSessionStatus>("logout_web_account", { provider });
 }
 
 /**
@@ -178,6 +217,48 @@ export function toFriendlyError(err: CommandError): FriendlyError {
       return {
         friendlyMessage: err.message || "响应格式无效",
         hint: "服务端返回内容不符合 OpenAI 协议",
+        retryable: true,
+      };
+    case ERROR_KIND.LoginRequired:
+      return {
+        friendlyMessage: "请先在设置中登录 Qwen",
+        hint: "WebGateway 模式需要登录 Qwen 账号才能翻译",
+        retryable: false,
+      };
+    case ERROR_KIND.SessionExpired:
+      return {
+        friendlyMessage: "Qwen 登录状态已过期",
+        hint: "请到设置页重新登录 Qwen",
+        retryable: false,
+      };
+    case ERROR_KIND.BackendCancelled:
+      return {
+        friendlyMessage: err.message || "翻译请求已被新请求取代",
+        hint: "连续触发翻译时旧请求会被取消，属于正常行为",
+        retryable: false,
+      };
+    case ERROR_KIND.BackendNetwork:
+      return {
+        friendlyMessage: "网络请求失败",
+        hint: "请检查网络连接，或稍后重试",
+        retryable: true,
+      };
+    case ERROR_KIND.BackendProtocolMismatch:
+      return {
+        friendlyMessage: "Qwen 网页协议已变化",
+        hint: "请切换 Official API 或更新 easyT",
+        retryable: false,
+      };
+    case ERROR_KIND.BackendPartialResponse:
+      return {
+        friendlyMessage: "上游响应不完整",
+        hint: "翻译过程被中断，请重试",
+        retryable: true,
+      };
+    case ERROR_KIND.BackendInvalidResponse:
+      return {
+        friendlyMessage: "响应格式无效",
+        hint: "Qwen 返回内容无法解析，请重试或切换 Official API",
         retryable: true,
       };
     case ERROR_KIND.ConfigInvalid:

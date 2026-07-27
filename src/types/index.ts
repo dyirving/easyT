@@ -174,6 +174,51 @@ export function getProviderPreset(
 }
 
 /**
+ * 翻译后端选择
+ * - officialApi：使用 OpenAI 兼容协议调用付费 API（默认）
+ * - webGateway：实验功能，使用网页登录态调用 Qwen 私有接口
+ */
+export type BackendMode = "officialApi" | "webGateway";
+
+/**
+ * Web 网关支持的 Provider 种类
+ * 第一版仅 Qwen；不预先引入动态注册表
+ */
+export type WebProviderKind = "qwen";
+
+/**
+ * Qwen 登录态阶段（与 Rust 端 QwenSessionPhase 对应）
+ * - loggedOut：本地无凭证或已显式注销
+ * - loggingIn：正在登录（已创建登录窗口，watcher 运行中）
+ * - ready：本地存在可解密凭证（不保证实时有效；首次 401/403 时转 expired）
+ * - expired：凭证曾被验证过但已失效，需要重新登录
+ */
+export type QwenSessionPhase =
+  | "loggedOut"
+  | "loggingIn"
+  | "ready"
+  | "expired";
+
+/** QwenSession 当前状态快照（前端可观察） */
+export interface QwenSessionStatus {
+  phase: QwenSessionPhase;
+  message: string | null;
+  updatedAt: number | null;
+}
+
+/**
+ * WebGateway 实验功能配置
+ * - provider：第一版仅 qwen
+ * - model：必须来自 QWEN_ALLOWED_MODELS 白名单
+ */
+export interface WebGatewayConfig {
+  provider: WebProviderKind;
+  model: string;
+  /** 是否将翻译请求显示在 Qwen 网页端对话历史中；默认关闭 */
+  saveHistory: boolean;
+}
+
+/**
  * 应用配置（与 Rust 端 AppConfig 对应）
  */
 export interface AppConfig {
@@ -201,7 +246,19 @@ export interface AppConfig {
   autoHide: boolean;
   pinnedByDefault: boolean;
   maxTextLength: number;
+  /** 翻译后端选择；旧配置缺失时默认 officialApi */
+  backendMode: BackendMode;
+  /** WebGateway 实验功能配置；旧配置缺失时默认 Qwen + Qwen3.7-Max */
+  webGateway: WebGatewayConfig;
 }
+
+/** Qwen WebGateway 允许的模型白名单（与 Rust 端 QWEN_ALLOWED_MODELS 对齐） */
+export const QWEN_ALLOWED_MODELS: { label: string; value: string }[] = [
+  { label: "Qwen3.7-千问（综合 AI 助手）", value: "Qwen" },
+  { label: "Qwen3.8-Max-Preview（最新旗舰）", value: "Qwen3.8-Max-Preview" },
+  { label: "Qwen3.7-Max（默认）", value: "Qwen3.7-Max" },
+  { label: "Qwen3.6-Flash（快速）", value: "Qwen3.6-Flash" },
+];
 
 export const DEFAULT_CONFIG: AppConfig = {
   provider: DEFAULT_PROVIDER,
@@ -216,6 +273,12 @@ export const DEFAULT_CONFIG: AppConfig = {
   autoHide: true,
   pinnedByDefault: false,
   maxTextLength: 5000,
+  backendMode: "officialApi",
+  webGateway: {
+    provider: "qwen",
+    model: "Qwen3.7-Max",
+    saveHistory: false,
+  },
 };
 
 /**
@@ -234,6 +297,21 @@ export const ERROR_KIND = {
   ApiRequestFailed: "ApiRequestFailed",
   ApiResponseInvalid: "ApiResponseInvalid",
   WindowError: "WindowError",
+  // ===== Backend 错误（来自 TranslationBackend）=====
+  /** WebGateway 模式下本地无可用凭证，需要用户先登录 */
+  LoginRequired: "LoginRequired",
+  /** 凭证曾存在但已过期，需要重新登录 */
+  SessionExpired: "SessionExpired",
+  /** 翻译请求被新请求取代（latest-wins abort） */
+  BackendCancelled: "BackendCancelled",
+  /** WebGateway 网络层错误（DNS、连接拒绝、TLS 等） */
+  BackendNetwork: "BackendNetwork",
+  /** Qwen 私有协议结构已变化 */
+  BackendProtocolMismatch: "BackendProtocolMismatch",
+  /** 流式响应中断且已收到部分正文，不能作为成功返回 */
+  BackendPartialResponse: "BackendPartialResponse",
+  /** 响应无法解析或缺少必要字段 */
+  BackendInvalidResponse: "BackendInvalidResponse",
   Internal: "Internal",
 } as const;
 

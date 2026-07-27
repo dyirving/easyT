@@ -1,6 +1,6 @@
 [package]
 name = "easyt"
-version = "1.0.1"
+version = "2.0.0"
 description = "easyT - 轻量级 Windows 划词翻译应用"
 authors = ["easyT"]
 edition = "2021"
@@ -20,30 +20,32 @@ tauri-plugin-log = "2"
 tauri-plugin-global-shortcut = "2"
 # 剪贴板管理：阶段7 接入，读取选中文本与恢复原剪贴板内容
 tauri-plugin-clipboard-manager = "2"
-# 窗口状态：保存并恢复用户调整后的窗口尺寸
-tauri-plugin-window-state = "2.4.1"
 # 模拟键盘输入：阶段7 接入，模拟 Ctrl+C 触发系统复制
 enigo = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
-# 异步运行时：当前只需要 spawn_blocking
-tokio = { version = "1", features = ["rt"] }
-# HTTP 客户端（后续阶段用于调用 OpenAI-compatible 接口）
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 异步运行时：rt 用于 spawn_blocking；time 用于重试延迟与登录轮询
+tokio = { version = "1", features = ["rt", "time", "sync", "macros", "rt-multi-thread"] }
+# HTTP 客户端：stream 用于 SSE 流式响应
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # 统一错误处理（实现 Display / Serialize，向前端友好返回）
 thiserror = "1"
+# UUID：用于 Qwen 请求 session_id / req_id / device_id
+uuid = { version = "1", default-features = false, features = ["v4"] }
+# 请求期间的 ticket 内存副本在 Drop 时显式清理
+zeroize = { version = "1", features = ["alloc"] }
+# Stream trait 扩展：用于 SSE 流式响应消费
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
-# Windows API：阶段8 接入，用于获取鼠标位置与显示器工作区
-# 仅 Windows 平台需要；通过 features 启用窗口定位所需子集
+# Windows API：获取鼠标位置、显示器工作区，以及原子替换凭证文件
+# 仅 Windows 平台需要；通过 features 启用所需子集
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
 ] }
-
-# 后续阶段将按需引入：
-# - enigo / windows-sys           (阶段7 模拟 Ctrl+C)
 
 [features]
 default = []

@@ -1,6 +1,11 @@
 import { Pin, PinOff, Settings, X, RefreshCw, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/Button";
 
+const charaLogo = new URL(
+  "../assets/chara_logo_titlebar.png",
+  import.meta.url,
+).href;
+
 interface TranslationHeaderProps {
   pinned: boolean;
   onTogglePin: () => void;
@@ -32,7 +37,12 @@ export function TranslationHeader({
         data-tauri-drag-region
       >
         <span className="inline-block h-2 w-2 rounded-full bg-accent" />
-        easyT
+        <img
+          src={charaLogo}
+          alt="easyT"
+          className="pointer-events-none h-5 w-auto select-none object-contain"
+          draggable={false}
+        />
       </div>
       <div className="flex items-center gap-0.5">
         <Button

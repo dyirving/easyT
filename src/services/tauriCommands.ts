@@ -1,7 +1,7 @@
 // Tauri 命令服务层
 // 通过 invoke 调用 Rust 后端命令
-// 翻译/捕获/快捷键/窗口相关命令在后续阶段接入真实逻辑
-import { invoke } from "@tauri-apps/api/core";
+// 翻译、捕获、快捷键和窗口相关命令的前端封装。
+import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   type AppConfig,
   type ErrorKind,
@@ -43,25 +43,53 @@ export async function captureSelectedText(): Promise<string> {
  * config 由 Rust 端从 AppState 读取，前端不携带 api_key
  */
 export interface TranslateTextRequest {
+  requestId: string;
   text: string;
   targetLanguage: string;
+  streamOutput: boolean;
+  onContentDelta?: (delta: string) => void;
 }
 
 export interface TranslationResult {
   translatedText: string;
 }
 
+interface TranslationStreamEvent {
+  type: "contentDelta";
+  requestId: string;
+  delta: string;
+}
+
 export async function translateText(
   request: TranslateTextRequest,
 ): Promise<TranslationResult> {
-  return invoke<TranslationResult>("translate_text", {
+  if (!request.streamOutput) {
+    return invoke<TranslationResult>("translate_text", {
+      text: request.text,
+      targetLanguage: request.targetLanguage,
+    });
+  }
+
+  if (!request.onContentDelta) {
+    throw new Error("流式翻译缺少正文增量回调");
+  }
+
+  const onContentDelta = request.onContentDelta;
+  const channel = new Channel<TranslationStreamEvent>((event) => {
+    if (event.requestId !== request.requestId) return;
+    onContentDelta(event.delta);
+  });
+
+  return invoke<TranslationResult>("translate_text_stream", {
+    requestId: request.requestId,
     text: request.text,
     targetLanguage: request.targetLanguage,
+    onEvent: channel,
   });
 }
 
 /**
- * 测试 API 连接（占位，下一轮接入）
+ * 测试当前草稿配置的 API 连接；Rust 端按 streamOutput 选择测试模式。
  */
 export async function testApiConnection(
   config: AppConfig,
@@ -260,6 +288,12 @@ export function toFriendlyError(err: CommandError): FriendlyError {
         friendlyMessage: "响应格式无效",
         hint: "Qwen 返回内容无法解析，请重试或切换 Official API",
         retryable: true,
+      };
+    case ERROR_KIND.BackendStreamingUnsupported:
+      return {
+        friendlyMessage: "当前后端不支持流式输出",
+        hint: "请在设置中关闭“流式输出”后重试",
+        retryable: false,
       };
     case ERROR_KIND.ConfigInvalid:
       return {

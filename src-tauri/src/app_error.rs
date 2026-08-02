@@ -66,6 +66,9 @@ pub enum AppError {
     #[error("响应无效: {0}")]
     BackendInvalidResponse(String),
 
+    #[error("当前后端不支持流式输出")]
+    BackendStreamingUnsupported,
+
     #[error("内部错误: {0}")]
     Internal(String),
 }
@@ -99,6 +102,7 @@ impl AppError {
             AppError::BackendProtocolMismatch(_) => "BackendProtocolMismatch",
             AppError::BackendPartialResponse(_) => "BackendPartialResponse",
             AppError::BackendInvalidResponse(_) => "BackendInvalidResponse",
+            AppError::BackendStreamingUnsupported => "BackendStreamingUnsupported",
             AppError::Internal(_) => "Internal",
         }
     }
@@ -143,6 +147,7 @@ impl From<BackendError> for AppError {
             BackendErrorKind::InvalidResponse => {
                 AppError::BackendInvalidResponse(err.safe_message())
             }
+            BackendErrorKind::StreamingUnsupported => AppError::BackendStreamingUnsupported,
             BackendErrorKind::ConfigInvalid => AppError::ConfigInvalid(err.safe_message()),
             BackendErrorKind::UnsupportedPlatform => {
                 AppError::Internal("当前平台不支持此操作".to_string())
@@ -183,5 +188,13 @@ mod tests {
     fn backend_cancelled_maps_to_backend_cancelled() {
         let app_err: AppError = BackendError::Cancelled.into();
         assert!(matches!(app_err, AppError::BackendCancelled));
+    }
+
+    #[test]
+    fn streaming_unsupported_maps_to_frontend_error_kind() {
+        let app_err: AppError = BackendError::StreamingUnsupported("unsupported".into()).into();
+        let json = serde_json::to_value(app_err).expect("error should serialize");
+
+        assert_eq!(json["kind"], "BackendStreamingUnsupported");
     }
 }

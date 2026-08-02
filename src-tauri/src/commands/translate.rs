@@ -3,8 +3,12 @@ use std::sync::{Arc, Mutex};
 
 use crate::app_error::{AppError, AppResult};
 use crate::commands::config::AppState;
-use crate::translation_backend::{BackendMode, BackendRequest, TranslationBackend};
-use tauri::State;
+use crate::translation_backend::models::BackendProgress;
+use crate::translation_backend::{
+    BackendMode, BackendRequest, TranslationBackend, TranslationProgress,
+};
+use serde::Serialize;
+use tauri::{ipc::Channel, State};
 
 struct ActiveTranslation {
     generation: u64,
@@ -20,6 +24,38 @@ struct TranslationRequestState {
 /// 只保留最新翻译任务。新任务安装时立即取消旧任务，限制并发和内存占用。
 pub struct TranslationRequestManager {
     state: Mutex<TranslationRequestState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum TranslationStreamEvent {
+    ContentDelta {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        delta: String,
+    },
+}
+
+struct ChannelProgress {
+    request_id: String,
+    channel: Channel<TranslationStreamEvent>,
+}
+
+impl TranslationProgress for ChannelProgress {
+    fn emit(
+        &self,
+        progress: BackendProgress,
+    ) -> Result<(), crate::translation_backend::BackendError> {
+        match progress {
+            BackendProgress::ContentDelta(delta) => self
+                .channel
+                .send(TranslationStreamEvent::ContentDelta {
+                    request_id: self.request_id.clone(),
+                    delta,
+                })
+                .map_err(|_| crate::translation_backend::BackendError::Cancelled),
+        }
+    }
 }
 
 impl TranslationRequestManager {
@@ -90,12 +126,7 @@ pub async fn translate_text(
     target_language: String,
 ) -> AppResult<crate::llm::models::TranslationResult> {
     let config = state.snapshot()?;
-    if text.trim().is_empty() {
-        return Err(AppError::NoSelectedText);
-    }
-    if text.chars().count() > config.max_text_length {
-        return Err(AppError::TextTooLong);
-    }
+    validate_translate_request(&config, &text)?;
 
     let request = BackendRequest {
         text,
@@ -117,6 +148,59 @@ pub async fn translate_text(
         .await?;
 
     Ok(result)
+}
+
+/// 流式翻译文本：通过每次请求独立的 Tauri Channel 上报正文增量。
+#[tauri::command]
+pub async fn translate_text_stream(
+    state: State<'_, AppState>,
+    request_manager: State<'_, TranslationRequestManager>,
+    backend: State<'_, Arc<TranslationBackend>>,
+    request_id: String,
+    text: String,
+    target_language: String,
+    on_event: Channel<TranslationStreamEvent>,
+) -> AppResult<crate::llm::models::TranslationResult> {
+    if request_id.trim().is_empty() {
+        return Err(AppError::ConfigInvalid("请求 ID 不能为空".to_string()));
+    }
+
+    let config = state.snapshot()?;
+    validate_translate_request(&config, &text)?;
+
+    let request = BackendRequest {
+        text,
+        target_language,
+    };
+    let backend = backend.inner().clone();
+    let progress: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
+        request_id,
+        channel: on_event,
+    });
+
+    let result = request_manager
+        .run_latest(async move {
+            backend
+                .translate_stream(&config, request, progress)
+                .await
+                .map(|result| crate::llm::models::TranslationResult {
+                    translated_text: result.translated_text,
+                })
+                .map_err(AppError::from)
+        })
+        .await?;
+
+    Ok(result)
+}
+
+fn validate_translate_request(config: &crate::config::AppConfig, text: &str) -> AppResult<()> {
+    if text.trim().is_empty() {
+        return Err(AppError::NoSelectedText);
+    }
+    if text.chars().count() > config.max_text_length {
+        return Err(AppError::TextTooLong);
+    }
+    Ok(())
 }
 
 /// 测试连接
@@ -174,7 +258,11 @@ mod tests {
     use std::sync::Arc;
 
     use super::TranslationRequestManager;
+    use super::TranslationStreamEvent;
+    use super::{ChannelProgress, TranslationProgress};
     use crate::app_error::AppError;
+    use crate::translation_backend::models::BackendProgress;
+    use crate::translation_backend::BackendError;
 
     #[test]
     fn a_new_translation_cancels_the_previous_task() {
@@ -208,5 +296,37 @@ mod tests {
             // BackendCancelled 是新错误类型，消息为"翻译请求已被新请求取代"
             assert!(first_error.to_string().contains("已被新请求取代"));
         });
+    }
+
+    #[test]
+    fn stream_event_serializes_with_frontend_contract() {
+        let event = TranslationStreamEvent::ContentDelta {
+            request_id: "req_test".to_string(),
+            delta: "你好".to_string(),
+        };
+        let json = serde_json::to_value(event).expect("event should serialize");
+
+        assert_eq!(json["type"], "contentDelta");
+        assert_eq!(json["requestId"], "req_test");
+        assert_eq!(json["delta"], "你好");
+    }
+
+    #[test]
+    fn closed_channel_maps_to_cancelled_without_panicking() {
+        let channel = tauri::ipc::Channel::new(|_| {
+            Err(tauri::Error::Io(std::io::Error::other(
+                "channel consumer closed",
+            )))
+        });
+        let progress = ChannelProgress {
+            request_id: "req_test".to_string(),
+            channel,
+        };
+
+        let error = progress
+            .emit(BackendProgress::ContentDelta("delta".to_string()))
+            .expect_err("closed channel must cancel the request");
+
+        assert!(matches!(error, BackendError::Cancelled));
     }
 }

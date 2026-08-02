@@ -4,5 +4,6 @@
 //! 错误统一为 BackendError。
 
 pub mod adapter;
+pub mod sse_decoder;
 
 pub use adapter::OfficialApiAdapter;

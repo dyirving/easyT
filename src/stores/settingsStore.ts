@@ -25,7 +25,11 @@ interface SettingsStore {
  * - 始终保证 apiKey === apiKeys[provider]（ ?? ""）
  */
 function migrateConfig(input: AppConfig): AppConfig {
-  const config: AppConfig = { ...input, apiKeys: { ...input.apiKeys } };
+  const config: AppConfig = {
+    ...input,
+    apiKeys: { ...input.apiKeys },
+    streamOutput: input.streamOutput ?? false,
+  };
   if (!config.apiKeys || Object.keys(config.apiKeys).length === 0) {
     if (config.apiKey) {
       config.apiKeys = { [config.provider]: config.apiKey };

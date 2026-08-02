@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{
-    BackendMode, BackendRequest, BackendResult, WebProviderKind,
+    BackendMode, BackendRequest, BackendResult, TranslationProgress, WebProviderKind,
 };
 use crate::translation_backend::BackendHealth;
 
@@ -59,9 +59,37 @@ impl WebGateway {
         }
     }
 
+    pub async fn translate_stream(
+        &self,
+        config: &AppConfig,
+        request: BackendRequest,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        match config.web_gateway.provider {
+            WebProviderKind::Qwen => {
+                let mut result = self
+                    .qwen
+                    .translate_stream(config, request, progress)
+                    .await?;
+                result.source.backend = BackendMode::WebGateway;
+                Ok(result)
+            }
+        }
+    }
+
     pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
         match config.web_gateway.provider {
             WebProviderKind::Qwen => self.qwen.test_connection(config).await,
+        }
+    }
+
+    pub async fn test_connection_stream(
+        &self,
+        config: &AppConfig,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendHealth, BackendError> {
+        match config.web_gateway.provider {
+            WebProviderKind::Qwen => self.qwen.test_connection_stream(config, progress).await,
         }
     }
 }

@@ -5,6 +5,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::error::BackendError;
+
 /// 翻译后端选择
 /// - OfficialApi：使用 OpenAI 兼容协议调用付费 API
 /// - WebGateway：实验功能，使用网页登录态调用 Qwen 私有接口
@@ -37,6 +39,17 @@ pub enum WebProviderKind {
 pub struct BackendRequest {
     pub text: String,
     pub target_language: String,
+}
+
+/// 可见译文的后端增量。reasoning 和协议心跳不应进入此契约。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackendProgress {
+    ContentDelta(String),
+}
+
+/// 翻译后端向上层报告可见正文的最小契约。
+pub trait TranslationProgress: Send + Sync {
+    fn emit(&self, progress: BackendProgress) -> Result<(), BackendError>;
 }
 
 /// 翻译后端统一结果

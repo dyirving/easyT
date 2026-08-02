@@ -13,7 +13,10 @@ use commands::{
     clipboard::copy_translation,
     config::{get_config, save_config, AppState},
     selection::capture_selected_text,
-    translate::{test_api_connection, test_connection, translate_text, TranslationRequestManager},
+    translate::{
+        test_api_connection, test_connection, translate_text, translate_text_stream,
+        TranslationRequestManager,
+    },
     web_gateway::{begin_web_login, get_web_login_status, logout_web_account},
     window::{
         hide_translation_window, position_window_near_mouse, set_window_pinned,
@@ -146,6 +149,7 @@ pub fn run() {
             save_config,
             capture_selected_text,
             translate_text,
+            translate_text_stream,
             test_api_connection,
             test_connection,
             show_translation_window,

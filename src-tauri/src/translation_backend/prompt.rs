@@ -17,7 +17,7 @@ pub fn build_system_prompt(target_language: &str) -> String {
 3. 保留公式、变量、引用编号、缩写和特殊符号。
 4. 公式必须输出为可被 Markdown 数学渲染器解析的 LaTeX：行内公式使用 `$...$`，独立公式使用 `$$...$$`。
 5. 不要把公式写成转义后的普通文本，例如不要输出 `\$X\^2\$`、`\\(X\\)` 或散落的 `\in`；应输出 `$X^2$`、`$X \in \mathbb{{R}}$`。
-6. 公式内部保持合法 LaTeX，优先使用 KaTeX 支持的写法，如 `\mathbb{{R}}`、`\times`、`_`、`^`、`\text{{model}}`。
+6. 公式内部保持合法 LaTeX，优先使用 KaTeX 支持的写法，如 `\mathbb{{R}}`、`\times`、`_`、`^`、`\text{{model}}`；包含 `\tag{{n}}` 的编号公式必须使用 `$$...$$` 独立成段，不能使用 `$...$`。
 7. 翻译公式周围的自然语言，但不要翻译或改写公式内部的变量名、维度符号、函数名和下标含义。
 8. 代码标识符、库名、包名、命令、API 名称等不可翻译部分保留原文，但要翻译其类别或上下文含义；例如 "Python requests" 应译为 "Python requests 库"。
 9. 重要专业术语首次出现时，可以使用"中文术语（English Term）"形式。
@@ -50,6 +50,7 @@ mod tests {
         assert!(prompt.contains("独立公式使用 `$$...$$`"));
         assert!(prompt.contains("\\mathbb{R}"));
         assert!(prompt.contains("KaTeX"));
+        assert!(prompt.contains("包含 `\\tag{n}` 的编号公式必须使用 `$$...$$`"));
         assert!(prompt.contains("不要输出 `\\$X\\^2\\$`"));
     }
 }

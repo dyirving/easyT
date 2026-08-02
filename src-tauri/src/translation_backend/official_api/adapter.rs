@@ -6,6 +6,7 @@
 //! - 保留不同 Official Provider 的 thinking 参数差异
 //! - 输出 BackendResult，source.backend 为 OfficialApi
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -13,9 +14,11 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AppConfig, ModelProvider};
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{
-    BackendMode, BackendRequest, BackendResult, BackendSource,
+    BackendMode, BackendProgress, BackendRequest, BackendResult, BackendSource, TranslationProgress,
 };
 use crate::translation_backend::prompt::build_system_prompt;
+
+use super::sse_decoder::{OpenAiDecodeOutcome, OpenAiSseDecoder};
 
 /// OpenAI 兼容 Chat Completions 请求/响应结构
 /// （从 llm/error.rs 移植，避免与旧模块耦合）
@@ -95,7 +98,7 @@ impl OfficialApiAdapter {
         }
 
         // 2. 构建请求
-        let body = build_request_body(config, &request);
+        let body = build_request_body(config, &request, false);
         let url = format!("{}/chat/completions", normalize_base_url(&config.base_url));
 
         // 3. 发起请求（复用连接池，单次请求保留配置超时）
@@ -143,14 +146,72 @@ impl OfficialApiAdapter {
             return Err(BackendError::InvalidResponse("译文为空".to_string()));
         }
 
-        Ok(BackendResult {
-            translated_text,
-            source: BackendSource {
-                backend: BackendMode::OfficialApi,
-                provider: provider_str(&config.provider),
-                model: config.model.clone(),
-            },
-        })
+        build_backend_result(config, translated_text)
+    }
+
+    /// 使用标准 Chat Completions SSE 的流式翻译。
+    pub async fn translate_stream(
+        &self,
+        config: &AppConfig,
+        request: BackendRequest,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        if config.api_key.trim().is_empty() {
+            return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
+        }
+        if config.model.trim().is_empty() {
+            return Err(BackendError::ConfigInvalid("模型名称不能为空".to_string()));
+        }
+
+        let body = build_request_body(config, &request, true);
+        let url = format!("{}/chat/completions", normalize_base_url(&config.base_url));
+        let timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 300));
+
+        log::info!(
+            "请求流式翻译: model={}, target_language={}, text_len={}",
+            config.model,
+            request.target_language,
+            request.text.chars().count()
+        );
+
+        let response = tokio::time::timeout(
+            timeout,
+            self.http_client
+                .post(&url)
+                .bearer_auth(&config.api_key)
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| BackendError::Timeout)?
+        .map_err(map_request_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = tokio::time::timeout(timeout, response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
+            return Err(map_status_to_error(status, &body));
+        }
+
+        self.consume_sse_stream(response, config, progress).await
+    }
+
+    async fn consume_sse_stream(
+        &self,
+        response: reqwest::Response,
+        config: &AppConfig,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        use futures_util::StreamExt;
+
+        let timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 300));
+        let stream = response
+            .bytes_stream()
+            .map(|chunk| chunk.map_err(map_stream_error));
+        consume_sse_chunks(stream, config, progress, timeout).await
     }
 
     /// 测试连接：发起极短翻译请求验证可用
@@ -167,13 +228,73 @@ impl OfficialApiAdapter {
             target_language: config.target_language.clone(),
         };
         let result = self.translate(config, request).await?;
-        Ok(crate::translation_backend::BackendHealth {
-            ok: true,
-            message: format!(
-                "连接成功，返回译文长度 {} 字符",
-                result.translated_text.chars().count()
+        Ok(crate::translation_backend::BackendHealth::translation_succeeded("连接成功", &result))
+    }
+
+    pub async fn test_connection_stream(
+        &self,
+        config: &AppConfig,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<crate::translation_backend::BackendHealth, BackendError> {
+        if config.api_key.trim().is_empty() {
+            return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
+        }
+
+        let request = BackendRequest {
+            text: "hi".to_string(),
+            target_language: config.target_language.clone(),
+        };
+        let result = self.translate_stream(config, request, progress).await?;
+        Ok(
+            crate::translation_backend::BackendHealth::translation_succeeded(
+                "流式连接成功",
+                &result,
             ),
-        })
+        )
+    }
+}
+
+async fn consume_sse_chunks<S, B>(
+    stream: S,
+    config: &AppConfig,
+    progress: Arc<dyn TranslationProgress>,
+    timeout: Duration,
+) -> Result<BackendResult, BackendError>
+where
+    S: futures_util::Stream<Item = Result<B, BackendError>>,
+    B: AsRef<[u8]>,
+{
+    use futures_util::StreamExt;
+
+    futures_util::pin_mut!(stream);
+    let mut deadline = tokio::time::Instant::now() + timeout;
+    let mut decoder = OpenAiSseDecoder::new();
+    let mut content = String::new();
+
+    loop {
+        let chunk = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| BackendError::Timeout)?;
+        let Some(chunk) = chunk else {
+            return decoder.finish().and_then(|()| {
+                Err(BackendError::Internal(
+                    "Official API decoder 完成状态未产生 Completed 事件".to_string(),
+                ))
+            });
+        };
+        let chunk = chunk?;
+        for outcome in decoder.feed(&chunk)? {
+            match outcome {
+                OpenAiDecodeOutcome::ContentDelta(delta) => {
+                    progress.emit(BackendProgress::ContentDelta(delta.clone()))?;
+                    content.push_str(&delta);
+                    deadline = tokio::time::Instant::now() + timeout;
+                }
+                OpenAiDecodeOutcome::Completed => {
+                    return build_backend_result(config, content);
+                }
+            }
+        }
     }
 }
 
@@ -189,7 +310,11 @@ fn provider_str(provider: &ModelProvider) -> String {
     }
 }
 
-fn build_request_body(config: &AppConfig, request: &BackendRequest) -> ChatCompletionRequest {
+fn build_request_body(
+    config: &AppConfig,
+    request: &BackendRequest,
+    stream: bool,
+) -> ChatCompletionRequest {
     // 仅当用户关闭思考时注入关闭参数；开启时留空走供应商默认
     let (thinking, enable_thinking) = if config.enable_thinking {
         (None, None)
@@ -217,10 +342,29 @@ fn build_request_body(config: &AppConfig, request: &BackendRequest) -> ChatCompl
             },
         ],
         temperature: Some(0.2),
-        stream: Some(false),
+        stream: Some(stream),
         thinking,
         enable_thinking,
     }
+}
+
+fn build_backend_result(
+    config: &AppConfig,
+    translated_text: String,
+) -> Result<BackendResult, BackendError> {
+    let translated_text = translated_text.trim().to_string();
+    if translated_text.is_empty() {
+        return Err(BackendError::InvalidResponse("译文为空".to_string()));
+    }
+
+    Ok(BackendResult {
+        translated_text,
+        source: BackendSource {
+            backend: BackendMode::OfficialApi,
+            provider: provider_str(&config.provider),
+            model: config.model.clone(),
+        },
+    })
 }
 
 /// 规范化 Base URL：去除末尾斜杠，避免拼出 //
@@ -277,9 +421,54 @@ fn map_request_error(err: reqwest::Error) -> BackendError {
     }
 }
 
+fn map_stream_error(err: reqwest::Error) -> BackendError {
+    if err.is_timeout() {
+        BackendError::Timeout
+    } else {
+        BackendError::Network("流读取失败".to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use futures_util::stream;
+
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingProgress {
+        deltas: Mutex<Vec<String>>,
+        fail: bool,
+    }
+
+    impl TranslationProgress for RecordingProgress {
+        fn emit(&self, progress: BackendProgress) -> Result<(), BackendError> {
+            if self.fail {
+                return Err(BackendError::Cancelled);
+            }
+            let BackendProgress::ContentDelta(delta) = progress;
+            self.deltas.lock().expect("deltas lock").push(delta);
+            Ok(())
+        }
+    }
+
+    fn test_config() -> AppConfig {
+        let mut config = crate::config::default_config();
+        config.model = "test-model".to_string();
+        config
+    }
+
+    fn delayed_chunks(
+        chunks: Vec<(Duration, &'static str)>,
+    ) -> impl futures_util::Stream<Item = Result<Vec<u8>, BackendError>> {
+        stream::unfold(chunks.into_iter(), |mut chunks| async move {
+            let (delay, chunk) = chunks.next()?;
+            tokio::time::sleep(delay).await;
+            Some((Ok(chunk.as_bytes().to_vec()), chunks))
+        })
+    }
 
     #[test]
     fn normalize_base_url_strips_trailing_slash() {
@@ -297,5 +486,109 @@ mod tests {
     fn status_429_maps_to_rate_limited() {
         let err = map_status_to_error(reqwest::StatusCode::TOO_MANY_REQUESTS, "");
         assert!(matches!(err, BackendError::RateLimited));
+    }
+
+    #[test]
+    fn request_body_selects_stream_flag() {
+        let config = crate::config::default_config();
+        let request = BackendRequest {
+            text: "hello".to_string(),
+            target_language: "简体中文".to_string(),
+        };
+
+        let once = serde_json::to_value(build_request_body(&config, &request, false))
+            .expect("serialize once body");
+        let streaming = serde_json::to_value(build_request_body(&config, &request, true))
+            .expect("serialize streaming body");
+
+        assert_eq!(once["stream"], serde_json::Value::Bool(false));
+        assert_eq!(streaming["stream"], serde_json::Value::Bool(true));
+    }
+
+    #[tokio::test]
+    async fn content_deltas_refresh_idle_deadline() {
+        let chunks = delayed_chunks(vec![
+            (
+                Duration::from_millis(20),
+                "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n",
+            ),
+            (
+                Duration::from_millis(20),
+                "data: {\"choices\":[{\"delta\":{\"content\":\"b\"}}]}\n\n",
+            ),
+            (Duration::from_millis(20), "data: [DONE]\n\n"),
+        ]);
+        let progress = Arc::new(RecordingProgress::default());
+
+        let result = consume_sse_chunks(
+            chunks,
+            &test_config(),
+            progress.clone(),
+            Duration::from_millis(35),
+        )
+        .await
+        .expect("each content delta should refresh the deadline");
+
+        assert_eq!(result.translated_text, "ab");
+        assert_eq!(*progress.deltas.lock().unwrap(), vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn ignored_events_do_not_refresh_idle_deadline() {
+        let chunks = delayed_chunks(vec![
+            (Duration::from_millis(20), ": heartbeat\n\n"),
+            (Duration::from_millis(20), ": heartbeat\n\n"),
+        ]);
+
+        let error = consume_sse_chunks(
+            chunks,
+            &test_config(),
+            Arc::new(RecordingProgress::default()),
+            Duration::from_millis(30),
+        )
+        .await
+        .expect_err("heartbeats must not refresh the content deadline");
+
+        assert!(matches!(error, BackendError::Timeout));
+    }
+
+    #[tokio::test]
+    async fn eof_without_done_is_partial_after_content() {
+        let chunks = stream::iter(vec![Ok::<_, BackendError>(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n".to_vec(),
+        )]);
+
+        let error = consume_sse_chunks(
+            chunks,
+            &test_config(),
+            Arc::new(RecordingProgress::default()),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("EOF without done must fail");
+
+        assert!(matches!(error, BackendError::PartialResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn closed_progress_sink_cancels_stream() {
+        let chunks = stream::iter(vec![Ok::<_, BackendError>(
+            b"data: {\"choices\":[{\"delta\":{\"content\":\"stop\"}}]}\n\n".to_vec(),
+        )]);
+        let progress = RecordingProgress {
+            deltas: Mutex::default(),
+            fail: true,
+        };
+
+        let error = consume_sse_chunks(
+            chunks,
+            &test_config(),
+            Arc::new(progress),
+            Duration::from_secs(1),
+        )
+        .await
+        .expect_err("closed sink must stop consumption");
+
+        assert!(matches!(error, BackendError::Cancelled));
     }
 }

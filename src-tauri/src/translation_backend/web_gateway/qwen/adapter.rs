@@ -26,7 +26,9 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
-use crate::translation_backend::models::{BackendRequest, BackendResult, BackendSource};
+use crate::translation_backend::models::{
+    BackendProgress, BackendRequest, BackendResult, BackendSource, TranslationProgress,
+};
 use crate::translation_backend::prompt::build_system_prompt;
 use crate::translation_backend::BackendHealth;
 
@@ -100,6 +102,36 @@ impl QwenWebAdapter {
         }
     }
 
+    pub async fn translate_stream(
+        &self,
+        config: &AppConfig,
+        request: BackendRequest,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        ensure_qwen_ready(&self.session, config)?;
+
+        let app_data = crate::config::app_data_dir()
+            .map_err(|e| BackendError::Internal(format!("无法定位应用数据目录: {e}")))?;
+        let ticket = self
+            .session
+            .borrow_ticket(&app_data)?
+            .ok_or(BackendError::LoginRequired)?;
+
+        let result = self
+            .translate_stream_with_ticket(config, request, &ticket, progress)
+            .await;
+        drop(ticket);
+
+        match result {
+            Ok(result) => Ok(result),
+            Err(BackendError::Unauthorized) => {
+                self.session.mark_expired();
+                Err(BackendError::SessionExpired)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn translate_with_ticket(
         &self,
         config: &AppConfig,
@@ -107,29 +139,13 @@ impl QwenWebAdapter {
         ticket: &TicketSecret,
     ) -> Result<BackendResult, BackendError> {
         let timeout = config.timeout_seconds.clamp(5, 300);
-        let model = config.web_gateway.model.clone();
-        let target_language = request.target_language.clone();
-        let session_id = Uuid::new_v4().simple().to_string();
-        let req_id = Uuid::new_v4().simple().to_string();
-        let device_id = Uuid::new_v4().simple().to_string();
-
-        let body = build_qwen_request_body(
-            &model,
-            &request.text,
-            &target_language,
-            &session_id,
-            &req_id,
-            config.web_gateway.save_history,
-        );
-        let url = format!("{}/api/v2/chat", QWEN_API_BASE);
-        let headers = build_qwen_headers(ticket)?;
-        let params = build_qwen_query_params(&device_id);
+        let prepared = prepare_qwen_request(config, &request, ticket)?;
 
         // 日志只记录非敏感字段
         log::info!(
             "Qwen WebGateway 翻译: model={}, target_language={}, text_len={}",
-            model,
-            target_language,
+            prepared.model,
+            request.target_language,
             request.text.chars().count()
         );
 
@@ -140,18 +156,20 @@ impl QwenWebAdapter {
                 .ok_or(BackendError::Timeout)?;
             let resp = self
                 .http_client
-                .post(&url)
-                .headers(headers.clone())
-                .query(&params)
+                .post(&prepared.url)
+                .headers(prepared.headers.clone())
+                .query(&prepared.params)
                 .timeout(remaining)
-                .json(&body)
+                .json(&prepared.body)
                 .send()
                 .await
                 .map_err(map_request_error)?;
 
             let status = resp.status();
             if status.is_success() {
-                return self.consume_sse_stream(resp, &model).await;
+                return self
+                    .consume_sse_stream(resp, &prepared.model, None, None)
+                    .await;
             }
 
             let response_body = resp.text().await.unwrap_or_default();
@@ -174,89 +192,208 @@ impl QwenWebAdapter {
         Err(BackendError::Internal("Qwen 重试状态异常".to_string()))
     }
 
+    async fn translate_stream_with_ticket(
+        &self,
+        config: &AppConfig,
+        request: BackendRequest,
+        ticket: &TicketSecret,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        let timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 300));
+        let prepared = prepare_qwen_request(config, &request, ticket)?;
+
+        log::info!(
+            "Qwen WebGateway 流式翻译: model={}, target_language={}, text_len={}",
+            prepared.model,
+            request.target_language,
+            request.text.chars().count()
+        );
+
+        let response = tokio::time::timeout(
+            timeout,
+            self.http_client
+                .post(&prepared.url)
+                .headers(prepared.headers)
+                .query(&prepared.params)
+                .json(&prepared.body)
+                .send(),
+        )
+        .await
+        .map_err(|_| BackendError::Timeout)?
+        .map_err(map_request_error)?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let response_body = tokio::time::timeout(timeout, response.text())
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or_default();
+            log::warn!(
+                "Qwen 流式上游非 2xx: code={}, body_len={}",
+                status.as_u16(),
+                response_body.len()
+            );
+            return Err(map_status_to_error(status));
+        }
+
+        self.consume_sse_stream(response, &prepared.model, Some(progress), Some(timeout))
+            .await
+    }
+
     async fn consume_sse_stream(
         &self,
         resp: reqwest::Response,
         model: &str,
+        progress: Option<Arc<dyn TranslationProgress>>,
+        idle_timeout: Option<Duration>,
     ) -> Result<BackendResult, BackendError> {
         use futures_util::StreamExt;
 
-        let mut stream = resp.bytes_stream();
-        let mut decoder = QwenSseDecoder::new();
-        let mut content_acc = String::new();
-        let mut observed_any = false;
-
-        while let Some(chunk_result) = stream.next().await {
-            let chunk = chunk_result.map_err(map_stream_error)?;
-            let outcomes = decoder.feed(&chunk)?;
-            for outcome in outcomes {
-                match outcome {
-                    DecodeOutcome::Delta(delta) => {
-                        if let Some(content) = delta.content_delta {
-                            content_acc.push_str(&content);
-                            observed_any = true;
-                        }
-                    }
-                    DecodeOutcome::Completed => {
-                        let translated_text = content_acc.trim().to_string();
-                        if translated_text.is_empty() {
-                            return Err(BackendError::InvalidResponse(
-                                "Qwen 返回空译文".to_string(),
-                            ));
-                        }
-                        return Ok(BackendResult {
-                            translated_text,
-                            source: BackendSource {
-                                backend:
-                                    crate::translation_backend::models::BackendMode::WebGateway,
-                                provider: "qwen".to_string(),
-                                model: model.to_string(),
-                            },
-                        });
-                    }
-                    DecodeOutcome::UpstreamError { code, message } => {
-                        log::warn!(
-                            "Qwen 上游业务错误: code={}, message_len={}",
-                            code,
-                            message.len()
-                        );
-                        return Err(BackendError::InvalidResponse("Qwen 上游错误".to_string()));
-                    }
-                }
-            }
-        }
-
-        // 流结束但未收到 Completed
-        decoder.finish()?;
-        if observed_any && !content_acc.is_empty() {
-            // 流提前结束但有部分内容
-            return Err(BackendError::PartialResponse(format!(
-                "Qwen 流提前结束，已收到 {} 字节",
-                content_acc.len()
-            )));
-        }
-        Err(BackendError::InvalidResponse(
-            "未收到任何有效响应".to_string(),
-        ))
+        let stream = resp
+            .bytes_stream()
+            .map(|chunk| chunk.map_err(map_stream_error));
+        consume_qwen_sse_chunks(stream, model, progress, idle_timeout).await
     }
 
     pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
         ensure_qwen_ready(&self.session, config)?;
 
-        // 测试连接通过发起极短翻译请求验证
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
         };
         let result = self.translate(config, request).await?;
-        Ok(BackendHealth {
-            ok: true,
-            message: format!(
-                "连接成功，返回译文长度 {} 字符",
-                result.translated_text.chars().count()
-            ),
-        })
+        Ok(BackendHealth::translation_succeeded("连接成功", &result))
     }
+
+    pub async fn test_connection_stream(
+        &self,
+        config: &AppConfig,
+        progress: Arc<dyn TranslationProgress>,
+    ) -> Result<BackendHealth, BackendError> {
+        ensure_qwen_ready(&self.session, config)?;
+        let request = BackendRequest {
+            text: "hi".to_string(),
+            target_language: config.target_language.clone(),
+        };
+        let result = self.translate_stream(config, request, progress).await?;
+        Ok(BackendHealth::translation_succeeded(
+            "流式连接成功",
+            &result,
+        ))
+    }
+}
+
+async fn consume_qwen_sse_chunks<S, B>(
+    stream: S,
+    model: &str,
+    progress: Option<Arc<dyn TranslationProgress>>,
+    idle_timeout: Option<Duration>,
+) -> Result<BackendResult, BackendError>
+where
+    S: futures_util::Stream<Item = Result<B, BackendError>>,
+    B: AsRef<[u8]>,
+{
+    use futures_util::StreamExt;
+
+    futures_util::pin_mut!(stream);
+    let mut decoder = QwenSseDecoder::new();
+    let mut content_acc = String::new();
+    let mut deadline = idle_timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+
+    loop {
+        let chunk_result = if let Some(deadline) = deadline {
+            tokio::time::timeout_at(deadline, stream.next())
+                .await
+                .map_err(|_| BackendError::Timeout)?
+        } else {
+            stream.next().await
+        };
+        let Some(chunk_result) = chunk_result else {
+            break;
+        };
+        let chunk = chunk_result?;
+        let outcomes = decoder.feed(&chunk)?;
+        for outcome in outcomes {
+            match outcome {
+                DecodeOutcome::Delta(delta) => {
+                    if let Some(content) = delta.content_delta {
+                        content_acc.push_str(&content);
+                        if let Some(progress) = progress.as_ref() {
+                            progress.emit(BackendProgress::ContentDelta(content))?;
+                        }
+                        if let Some(timeout) = idle_timeout {
+                            deadline = Some(tokio::time::Instant::now() + timeout);
+                        }
+                    }
+                }
+                DecodeOutcome::Completed => {
+                    let translated_text = content_acc.trim().to_string();
+                    if translated_text.is_empty() {
+                        return Err(BackendError::InvalidResponse("Qwen 返回空译文".to_string()));
+                    }
+                    return Ok(BackendResult {
+                        translated_text,
+                        source: BackendSource {
+                            backend: crate::translation_backend::models::BackendMode::WebGateway,
+                            provider: "qwen".to_string(),
+                            model: model.to_string(),
+                        },
+                    });
+                }
+                DecodeOutcome::UpstreamError { code, message } => {
+                    log::warn!(
+                        "Qwen 上游业务错误: code={}, message_len={}",
+                        code,
+                        message.len()
+                    );
+                    return Err(BackendError::InvalidResponse("Qwen 上游错误".to_string()));
+                }
+            }
+        }
+    }
+
+    // 流结束但未收到 Completed
+    decoder.finish().and_then(|()| {
+        Err(BackendError::Internal(
+            "Qwen decoder 完成状态未产生 Completed 事件".to_string(),
+        ))
+    })
+}
+
+struct PreparedQwenRequest {
+    model: String,
+    url: String,
+    headers: HeaderMap,
+    params: Vec<(&'static str, String)>,
+    body: QwenRequestBody,
+}
+
+fn prepare_qwen_request(
+    config: &AppConfig,
+    request: &BackendRequest,
+    ticket: &TicketSecret,
+) -> Result<PreparedQwenRequest, BackendError> {
+    let model = config.web_gateway.model.clone();
+    let session_id = Uuid::new_v4().simple().to_string();
+    let req_id = Uuid::new_v4().simple().to_string();
+    let device_id = Uuid::new_v4().simple().to_string();
+
+    Ok(PreparedQwenRequest {
+        body: build_qwen_request_body(
+            &model,
+            &request.text,
+            &request.target_language,
+            &session_id,
+            &req_id,
+            config.web_gateway.save_history,
+        ),
+        model,
+        url: format!("{}/api/v2/chat", QWEN_API_BASE),
+        headers: build_qwen_headers(ticket)?,
+        params: build_qwen_query_params(&device_id),
+    })
 }
 
 // ===== Qwen 私有协议字段 =====
@@ -425,7 +562,39 @@ fn map_status_to_error(status: reqwest::StatusCode) -> BackendError {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use futures_util::stream;
+
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingProgress(Mutex<Vec<String>>);
+
+    impl TranslationProgress for RecordingProgress {
+        fn emit(&self, progress: BackendProgress) -> Result<(), BackendError> {
+            let BackendProgress::ContentDelta(delta) = progress;
+            self.0.lock().expect("deltas lock").push(delta);
+            Ok(())
+        }
+    }
+
+    fn content_event(content: &str, complete: bool) -> Vec<u8> {
+        let event = if complete { "event: complete\n" } else { "" };
+        format!(
+            "{event}data: {{\"error_code\":0,\"data\":{{\"messages\":[{{\"mime_type\":\"text/plain\",\"content\":{}}}]}}}}\n\n",
+            serde_json::to_string(content).expect("content JSON")
+        )
+        .into_bytes()
+    }
+
+    fn reasoning_event(reasoning: &str) -> Vec<u8> {
+        format!(
+            "data: {{\"error_code\":0,\"data\":{{\"messages\":[{{\"meta_data\":{{\"multi_load\":[{{\"type\":\"deep_think\",\"content\":{{\"think_content\":{}}}}}]}}}}]}}}}\n\n",
+            serde_json::to_string(reasoning).expect("reasoning JSON")
+        )
+        .into_bytes()
+    }
 
     #[test]
     fn retry_is_limited_to_rate_limit_and_server_errors() {
@@ -466,5 +635,66 @@ mod tests {
             true,
         );
         assert!(!persisted.temporary);
+    }
+
+    #[tokio::test]
+    async fn completed_stream_reports_only_content() {
+        let progress = Arc::new(RecordingProgress::default());
+        let chunks = stream::iter(vec![
+            Ok::<_, BackendError>(reasoning_event("thinking")),
+            Ok(content_event("译", false)),
+            Ok(content_event("译文", true)),
+        ]);
+
+        let result = consume_qwen_sse_chunks(
+            chunks,
+            "test-model",
+            Some(progress.clone()),
+            Some(Duration::from_secs(1)),
+        )
+        .await
+        .expect("completed stream");
+
+        assert_eq!(result.translated_text, "译文");
+        assert_eq!(*progress.0.lock().unwrap(), vec!["译", "文"]);
+    }
+
+    #[tokio::test]
+    async fn eof_without_complete_is_partial() {
+        let chunks = stream::iter(vec![Ok::<_, BackendError>(content_event("partial", false))]);
+
+        let error = consume_qwen_sse_chunks(chunks, "test-model", None, None)
+            .await
+            .expect_err("EOF without completion must fail");
+
+        assert!(matches!(error, BackendError::PartialResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn reasoning_does_not_refresh_idle_deadline() {
+        let chunks = stream::unfold(0, |step| async move {
+            match step {
+                0 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((Ok::<_, BackendError>(reasoning_event("one")), 1))
+                }
+                1 => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Some((Ok(reasoning_event("one two")), 2))
+                }
+                _ => None,
+            }
+        });
+
+        let error = consume_qwen_sse_chunks(
+            chunks,
+            "test-model",
+            Some(Arc::new(RecordingProgress::default())),
+            Some(Duration::from_millis(30)),
+        )
+        .await
+        .expect_err("reasoning must not refresh the content deadline");
+
+        assert!(matches!(error, BackendError::Timeout));
     }
 }

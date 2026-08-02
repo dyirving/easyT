@@ -52,6 +52,10 @@ pub enum BackendError {
     #[error("响应无效: {0}")]
     InvalidResponse(String),
 
+    /// 当前后端不支持标准流式输出或未遵循流式协议
+    #[error("当前后端不支持流式输出: {0}")]
+    StreamingUnsupported(String),
+
     /// 配置无效
     #[error("配置无效: {0}")]
     ConfigInvalid(String),
@@ -83,6 +87,7 @@ pub enum BackendErrorKind {
     ProtocolMismatch,
     PartialResponse,
     InvalidResponse,
+    StreamingUnsupported,
     ConfigInvalid,
     UnsupportedPlatform,
     CredentialCorrupted,
@@ -102,6 +107,7 @@ impl BackendError {
             BackendError::ProtocolMismatch(_) => BackendErrorKind::ProtocolMismatch,
             BackendError::PartialResponse(_) => BackendErrorKind::PartialResponse,
             BackendError::InvalidResponse(_) => BackendErrorKind::InvalidResponse,
+            BackendError::StreamingUnsupported(_) => BackendErrorKind::StreamingUnsupported,
             BackendError::ConfigInvalid(_) => BackendErrorKind::ConfigInvalid,
             BackendError::UnsupportedPlatform => BackendErrorKind::UnsupportedPlatform,
             BackendError::CredentialCorrupted => BackendErrorKind::CredentialCorrupted,
@@ -116,6 +122,7 @@ impl BackendError {
             BackendError::ProtocolMismatch(_) => "上游协议结构已变化".to_string(),
             BackendError::PartialResponse(_) => "上游响应不完整".to_string(),
             BackendError::InvalidResponse(_) => "响应格式无效".to_string(),
+            BackendError::StreamingUnsupported(_) => "当前后端不支持流式输出".to_string(),
             BackendError::Internal(_) => "内部错误".to_string(),
             _ => self.to_string(),
         }

@@ -97,6 +97,9 @@ pub struct AppConfig {
     /// true：保留各供应商默认思考行为，复杂语境下译文质量可能更好
     #[serde(default)]
     pub enable_thinking: bool,
+    /// 是否在译文生成期间逐步展示正文；缺失时关闭以保持旧行为
+    #[serde(default)]
+    pub stream_output: bool,
     pub shortcut: String,
     #[serde(alias = "target_language")]
     pub target_language: String,
@@ -129,6 +132,7 @@ pub fn default_config() -> AppConfig {
         api_key: String::new(),
         model: "agnes-2.0-flash".to_string(),
         enable_thinking: false,
+        stream_output: false,
         shortcut: "Ctrl+T".to_string(),
         target_language: "简体中文".to_string(),
         timeout_seconds: 60,
@@ -153,6 +157,7 @@ mod tests {
             "apiKey": "sk-deepseek-key",
             "model": "deepseek-chat",
             "enableThinking": true,
+            "streamOutput": true,
             "shortcut": "Ctrl+T",
             "targetLanguage": "简体中文",
             "timeoutSeconds": 60,
@@ -176,6 +181,7 @@ mod tests {
         assert_eq!(cfg.api_key, "sk-deepseek-key");
         assert_eq!(cfg.model, "deepseek-chat");
         assert!(cfg.enable_thinking);
+        assert!(cfg.stream_output);
         assert_eq!(cfg.target_language, "简体中文");
         // 旧配置文件缺失 backendMode/webGateway 时回退默认值
         assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
@@ -205,6 +211,7 @@ mod tests {
         assert_eq!(cfg.provider, ModelProvider::Custom);
         assert!(cfg.api_keys.is_empty());
         assert!(!cfg.enable_thinking);
+        assert!(!cfg.stream_output);
         assert_eq!(cfg.base_url, "https://api.openai.com/v1");
         assert_eq!(cfg.api_key, "sk-test");
         assert_eq!(cfg.model, "gpt-4o-mini");
@@ -221,6 +228,7 @@ mod tests {
         assert!(json.contains("baseUrl"));
         assert!(json.contains("apiKey"));
         assert!(json.contains("enableThinking"));
+        assert!(json.contains("streamOutput"));
         assert!(json.contains("targetLanguage"));
         assert!(json.contains("backendMode"));
         assert!(json.contains("webGateway"));
@@ -233,6 +241,7 @@ mod tests {
         assert_eq!(cfg.provider, ModelProvider::Agnes);
         assert!(cfg.api_keys.is_empty());
         assert!(!cfg.enable_thinking);
+        assert!(!cfg.stream_output);
         assert_eq!(cfg.base_url, "https://apihub.agnes-ai.com/v1");
         assert_eq!(cfg.model, "agnes-2.0-flash");
         assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
@@ -260,6 +269,26 @@ mod tests {
         assert_eq!(cfg.backend_mode, BackendMode::WebGateway);
         assert_eq!(cfg.web_gateway.model, "Qwen3.6-Flash");
         assert!(!cfg.web_gateway.save_history);
+        assert!(!cfg.stream_output);
+    }
+
+    #[test]
+    fn legacy_config_without_stream_output_defaults_to_disabled() {
+        let json = r#"{
+            "baseUrl": "https://api.openai.com/v1",
+            "apiKey": "sk-test",
+            "model": "gpt-4o-mini",
+            "shortcut": "Ctrl+T",
+            "targetLanguage": "简体中文",
+            "timeoutSeconds": 60,
+            "autoHide": true,
+            "pinnedByDefault": false,
+            "maxTextLength": 5000
+        }"#;
+        let cfg: AppConfig = serde_json::from_str(json).expect("legacy config should parse");
+
+        assert!(!cfg.stream_output);
+        assert_eq!(cfg.model, "gpt-4o-mini");
     }
 
     #[test]

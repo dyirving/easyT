@@ -6,8 +6,8 @@ import {
   setWindowPinned,
   toCommandError,
   toFriendlyError,
-  translateText,
 } from "@/services/tauriCommands";
+import { runTranslationRequest } from "@/services/translationRunner";
 import { TranslationHeader } from "@/components/TranslationHeader";
 import { OriginalTextPanel } from "@/components/OriginalTextPanel";
 import { TranslationPanel } from "@/components/TranslationPanel";
@@ -21,8 +21,7 @@ interface TranslationPageProps {
 }
 
 /**
- * 翻译页：组合各组件并渲染四种状态
- * 本轮接入真实 Tauri Command：调用 translate_text，因 api_key 未配置会返回 ApiUnauthorized
+ * 翻译页：组合各组件并渲染等待、生成中、成功和错误状态。
  */
 export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProps) {
   const {
@@ -31,9 +30,9 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     status,
     errorMessage,
     errorKind,
+    isPartial,
     pinned,
     startRequest,
-    succeedRequest,
     failRequest,
     togglePinned,
   } = useTranslationStore();
@@ -44,7 +43,8 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     "Large language models are trained on massive text corpora."
   );
 
-  const isBusy = status === "translating" || status === "capturing";
+  const isBusy =
+    status === "translating" || status === "capturing" || status === "streaming";
 
   // 触发一次翻译
   // config 由 Rust 端从 AppState 读取，前端只校验本地配置中的 maxTextLength 用于预拦截
@@ -69,16 +69,7 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
       return;
     }
 
-    try {
-      const result = await translateText({
-        text,
-        targetLanguage: config.targetLanguage,
-      });
-      succeedRequest(requestId, result.translatedText);
-    } catch (e) {
-      const err = toCommandError(e);
-      failRequest(requestId, err.message, err.kind, text);
-    }
+    await runTranslationRequest(requestId, text, { ...config });
   };
 
   const handleRetry = () => {
@@ -137,7 +128,7 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
         canRetry={!isBusy && !!originalText}
         copied={copied}
         onCopy={handleCopy}
-        canCopy={!!translatedText && status === "success"}
+        canCopy={!!translatedText && status === "success" && !isPartial}
       />
 
       <div className="flex-1 overflow-y-auto px-3 py-3">
@@ -183,6 +174,13 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
           </div>
         ) : null}
 
+        {status === "streaming" ? (
+          <div className="space-y-3">
+            <OriginalTextPanel text={originalText} />
+            <TranslationPanel text={translatedText} mode="streaming" />
+          </div>
+        ) : null}
+
         {(status === "capturing" || status === "translating") && !originalText ? (
           <LoadingState message={status === "capturing" ? "正在获取选中文本…" : "正在翻译…"} />
         ) : null}
@@ -190,13 +188,16 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
         {status === "success" ? (
           <div className="space-y-3">
             <OriginalTextPanel text={originalText} />
-            <TranslationPanel text={translatedText} />
+            <TranslationPanel text={translatedText} mode="complete" />
           </div>
         ) : null}
 
         {status === "error" ? (
           <div className="space-y-3">
             {originalText ? <OriginalTextPanel text={originalText} /> : null}
+            {isPartial && translatedText ? (
+              <TranslationPanel text={translatedText} mode="partial" />
+            ) : null}
             <ErrorState
               message={friendlyError?.friendlyMessage ?? errorMessage ?? "翻译失败"}
               hint={friendlyError?.hint}

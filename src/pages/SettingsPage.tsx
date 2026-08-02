@@ -409,6 +409,19 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
             <div className="flex items-center justify-between">
               <div>
+                <p className="text-sm font-medium text-ink">流式输出</p>
+                <p className="text-xs text-ink-muted">
+                  生成时逐步显示译文；Official API 端点需支持标准流式响应
+                </p>
+              </div>
+              <Switch
+                checked={config.streamOutput}
+                onCheckedChange={(v) => setConfig({ streamOutput: v })}
+                aria-label="流式输出"
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
                 <p className="text-sm font-medium text-ink">自动隐藏窗口</p>
                 <p className="text-xs text-ink-muted">失去焦点后隐藏临时窗口</p>
               </div>

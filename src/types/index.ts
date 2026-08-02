@@ -1,21 +1,26 @@
 // 应用统一类型定义
-// 第一轮（静态 UI）阶段：仅定义前端展示所需类型与占位常量，
-// 尚未连接 Tauri Command 与真实后端。
+// 应用前后端共享的前端类型与配置常量。
 
 /**
  * 翻译状态机
  * - idle: 空闲，等待用户触发
  * - capturing: 正在获取选中文本（占位，本轮不实际调用）
- * - translating: 正在调用大模型翻译
+ * - translating: 正在等待流式请求的首段正文，或执行一次性翻译
+ * - streaming: 已收到正文增量但尚未完成
  * - success: 翻译成功
  * - error: 翻译失败
  */
 export type TranslationStatus =
-  "idle" | "capturing" | "translating" | "success" | "error";
+  | "idle"
+  | "capturing"
+  | "translating"
+  | "streaming"
+  | "success"
+  | "error";
 
 /**
  * 前端翻译状态
- * 阶段9：errorKind 用于查表得到友好文案与可重试标识
+ * errorKind 用于查表得到友好文案与可重试标识
  */
 export interface TranslationState {
   requestId: string | null;
@@ -24,6 +29,8 @@ export interface TranslationState {
   status: TranslationStatus;
   errorMessage: string | null;
   errorKind: ErrorKind | null;
+  /** 当前译文是否只收到部分正文，不能作为完整译文复制 */
+  isPartial: boolean;
   pinned: boolean;
 }
 
@@ -240,6 +247,8 @@ export interface AppConfig {
    * true：保留各供应商默认思考行为，复杂语境下译文质量可能更好
    */
   enableThinking: boolean;
+  /** 是否在译文生成期间逐步展示正文；默认关闭 */
+  streamOutput: boolean;
   shortcut: string;
   targetLanguage: string;
   timeoutSeconds: number;
@@ -267,6 +276,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   apiKey: "",
   model: "agnes-2.0-flash",
   enableThinking: false,
+  streamOutput: false,
   shortcut: "Ctrl+T",
   targetLanguage: "简体中文",
   timeoutSeconds: 60,
@@ -312,6 +322,8 @@ export const ERROR_KIND = {
   BackendPartialResponse: "BackendPartialResponse",
   /** 响应无法解析或缺少必要字段 */
   BackendInvalidResponse: "BackendInvalidResponse",
+  /** 当前后端不支持标准流式输出 */
+  BackendStreamingUnsupported: "BackendStreamingUnsupported",
   Internal: "Internal",
 } as const;
 

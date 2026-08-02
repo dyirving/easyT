@@ -20,7 +20,7 @@ pub mod prompt;
 pub mod web_gateway;
 
 pub use error::BackendError;
-pub use models::{BackendMode, BackendRequest, BackendResult};
+pub use models::{BackendMode, BackendRequest, BackendResult, TranslationProgress};
 
 use std::sync::Arc;
 
@@ -35,6 +35,26 @@ use self::web_gateway::WebGateway;
 pub struct BackendHealth {
     pub ok: bool,
     pub message: String,
+}
+
+impl BackendHealth {
+    fn translation_succeeded(prefix: &str, result: &BackendResult) -> Self {
+        Self {
+            ok: true,
+            message: format!(
+                "{prefix}，返回译文长度 {} 字符",
+                result.translated_text.chars().count()
+            ),
+        }
+    }
+}
+
+struct DiscardProgress;
+
+impl TranslationProgress for DiscardProgress {
+    fn emit(&self, _progress: models::BackendProgress) -> Result<(), BackendError> {
+        Ok(())
+    }
 }
 
 /// 翻译后端统一入口
@@ -78,12 +98,45 @@ impl TranslationBackend {
         }
     }
 
+    /// 流式翻译入口：只向 progress 报告可见正文，完成后仍返回完整结果。
+    pub async fn translate_stream(
+        &self,
+        config: &AppConfig,
+        request: BackendRequest,
+        progress: std::sync::Arc<dyn TranslationProgress>,
+    ) -> Result<BackendResult, BackendError> {
+        validate_translate_request(&request, config)?;
+
+        match config.backend_mode {
+            BackendMode::OfficialApi => {
+                self.official_api
+                    .translate_stream(config, request, progress)
+                    .await
+            }
+            BackendMode::WebGateway => {
+                self.web_gateway
+                    .translate_stream(config, request, progress)
+                    .await
+            }
+        }
+    }
+
     /// 测试连接：必须通过当前 Adapter 进行真实轻量请求
     /// WebGateway 模式不得仅检查本地 ticket 存在后返回成功
     pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
         validate_test_connection(config)?;
         match config.backend_mode {
+            BackendMode::OfficialApi if config.stream_output => {
+                self.official_api
+                    .test_connection_stream(config, Arc::new(DiscardProgress))
+                    .await
+            }
             BackendMode::OfficialApi => self.official_api.test_connection(config).await,
+            BackendMode::WebGateway if config.stream_output => {
+                self.web_gateway
+                    .test_connection_stream(config, Arc::new(DiscardProgress))
+                    .await
+            }
             BackendMode::WebGateway => self.web_gateway.test_connection(config).await,
         }
     }

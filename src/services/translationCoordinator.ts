@@ -1,15 +1,13 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsStore } from "@/stores/settingsStore";
-import {
-  createTranslationRequestId,
-  useTranslationStore,
-} from "@/stores/translationStore";
+import { type AppConfig } from "@/types";
+import { createTranslationRequestId, useTranslationStore } from "@/stores/translationStore";
 import {
   captureSelectedText,
   positionWindowNearMouse,
   toCommandError,
-  translateText,
 } from "@/services/tauriCommands";
+import { runTranslationRequest } from "@/services/translationRunner";
 
 type RouteSetter = (route: "translation") => void;
 
@@ -56,31 +54,23 @@ async function captureForRequest(requestId: string) {
   }
 }
 
-async function translateAfterCapture(requestId: string, text: string) {
+async function translateAfterCapture(
+  requestId: string,
+  text: string,
+  config: AppConfig,
+) {
   if (!(await showWindowForRequest(requestId))) return;
   if (!useTranslationStore.getState().applyCapturedText(requestId, text)) return;
 
-  const { config } = useSettingsStore.getState();
-  try {
-    const result = await translateText({
-      text,
-      targetLanguage: config.targetLanguage,
-    });
-    useTranslationStore
-      .getState()
-      .succeedRequest(requestId, result.translatedText);
-  } catch (e) {
-    const err = toCommandError(e);
-    useTranslationStore
-      .getState()
-      .failRequest(requestId, err.message, err.kind, text);
-  }
+  await runTranslationRequest(requestId, text, config);
 }
 
 export function startShortcutTranslation(setRoute: RouteSetter) {
   setRoute("translation");
 
   const requestId = createTranslationRequestId();
+  // 固定请求启动时的配置，捕获选区期间的设置修改只影响下一请求。
+  const requestConfig = { ...useSettingsStore.getState().config };
   useTranslationStore.getState().beginCapture(requestId);
 
   const capture = captureQueue
@@ -92,6 +82,6 @@ export function startShortcutTranslation(setRoute: RouteSetter) {
   captureQueue = capture.then(() => undefined, () => undefined);
 
   void capture.then((text) => {
-    if (text) void translateAfterCapture(requestId, text);
+    if (text) void translateAfterCapture(requestId, text, requestConfig);
   });
 }

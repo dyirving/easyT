@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsStore } from "@/stores/settingsStore";
-import { type AppConfig } from "@/types";
-import { createTranslationRequestId, useTranslationStore } from "@/stores/translationStore";
+import { type AppConfig, ERROR_KIND } from "@/types";
+import { useTranslationStore } from "@/stores/translationStore";
 import {
   captureSelectedText,
   positionWindowNearMouse,
@@ -13,24 +13,31 @@ type RouteSetter = (route: "translation") => void;
 
 let captureQueue: Promise<void> = Promise.resolve();
 
-const isActiveRequest = (requestId: string) =>
-  useTranslationStore.getState().isActiveRequest(requestId);
-
-async function showWindowForRequest(requestId: string) {
-  if (!isActiveRequest(requestId)) return false;
+/** 显示并聚焦翻译窗口；失败只记录 warning，不阻断后续流程 */
+async function showAndFocusWindow() {
   try {
     const win = getCurrentWindow();
     await win.show();
-    if (!isActiveRequest(requestId)) return false;
     await win.setFocus();
   } catch (e) {
     console.warn("[easyT] 显示窗口失败:", e);
   }
-  return isActiveRequest(requestId);
 }
 
-async function captureForRequest(requestId: string) {
-  if (!isActiveRequest(requestId)) return null;
+/** 无选区显示恢复：切到翻译界面并显示聚焦窗口，不改任何翻译状态 */
+async function restoreTranslationWindow(setRoute: RouteSetter) {
+  setRoute("translation");
+  await showAndFocusWindow();
+}
+
+/** 有效文本：立即建立请求并启动翻译，窗口处理失败不阻断翻译 */
+async function translateCapturedText(
+  text: string,
+  config: AppConfig,
+  setRoute: RouteSetter,
+) {
+  const requestId = useTranslationStore.getState().startRequest(text);
+  setRoute("translation");
 
   try {
     const { pinned } = useTranslationStore.getState();
@@ -39,49 +46,41 @@ async function captureForRequest(requestId: string) {
     console.warn("[easyT] 重新定位窗口失败:", e);
   }
 
-  if (!isActiveRequest(requestId)) return null;
-
-  try {
-    const text = await captureSelectedText();
-    return isActiveRequest(requestId) ? text : null;
-  } catch (e) {
-    if (!(await showWindowForRequest(requestId))) return null;
-    const err = toCommandError(e);
-    useTranslationStore
-      .getState()
-      .failRequest(requestId, err.message, err.kind);
-    return null;
-  }
-}
-
-async function translateAfterCapture(
-  requestId: string,
-  text: string,
-  config: AppConfig,
-) {
-  if (!(await showWindowForRequest(requestId))) return;
-  if (!useTranslationStore.getState().applyCapturedText(requestId, text)) return;
-
+  await showAndFocusWindow();
   await runTranslationRequest(requestId, text, config);
 }
 
-export function startShortcutTranslation(setRoute: RouteSetter) {
-  setRoute("translation");
+/** 处理捕获结果：有效文本、无选区或其他捕获故障三分支 */
+async function handleCaptureResult(
+  capture: Promise<string>,
+  config: AppConfig,
+  setRoute: RouteSetter,
+) {
+  let text: string;
+  try {
+    text = await capture;
+  } catch (e) {
+    const err = toCommandError(e);
+    if (err.kind !== ERROR_KIND.NoSelectedText) {
+      useTranslationStore.getState().failCapture(err.message, err.kind);
+    }
+    await restoreTranslationWindow(setRoute);
+    return;
+  }
+  await translateCapturedText(text, config, setRoute);
+}
 
-  const requestId = createTranslationRequestId();
+export function startShortcutTranslation(setRoute: RouteSetter) {
   // 固定请求启动时的配置，捕获选区期间的设置修改只影响下一请求。
   const requestConfig = { ...useSettingsStore.getState().config };
-  useTranslationStore.getState().beginCapture(requestId);
 
   const capture = captureQueue
     .catch(() => {
       /* 上一次失败不阻断新的捕获 */
     })
-    .then(() => captureForRequest(requestId));
+    .then(() => captureSelectedText());
 
   captureQueue = capture.then(() => undefined, () => undefined);
 
-  void capture.then((text) => {
-    if (text) void translateAfterCapture(requestId, text, requestConfig);
-  });
+  void handleCaptureResult(capture, requestConfig, setRoute);
 }

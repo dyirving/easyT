@@ -12,6 +12,8 @@ pub const SHORTCUT_EVENT_TRANSLATE: &str = "shortcut://translate";
 struct ShortcutState {
     current_sc: Option<Shortcut>,
     stale_scs: Vec<Shortcut>,
+    /// 当前配置快捷键的按下状态；重复按下在此被去重
+    pressed: Option<Shortcut>,
 }
 
 /// 全局快捷键管理器。
@@ -38,9 +40,32 @@ impl ShortcutManager {
         self.lock().current_sc
     }
 
-    fn set_current(&self, sc: Option<Shortcut>) {
+    /// 处理按下事件：仅当快捷键是当前配置且未处于按下状态时接受。
+    /// 返回 `true` 表示该按下周期应触发一次激活。
+    fn begin_press(&self, sc: Shortcut) -> bool {
         let mut g = self.lock();
-        g.current_sc = sc;
+        if g.current_sc == Some(sc) && g.pressed != Some(sc) {
+            g.pressed = Some(sc);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 处理释放事件：清除对应快捷键的按下状态，不触发激活。
+    fn end_press(&self, sc: Shortcut) {
+        let mut g = self.lock();
+        if g.pressed == Some(sc) {
+            g.pressed = None;
+        }
+    }
+
+    /// 提交新快捷键为当前快捷键，并清除残留按下状态。
+    /// 防止快捷键替换后旧按下状态永久抑制新快捷键。
+    fn commit_new_current(&self, new_sc: Shortcut) {
+        let mut g = self.lock();
+        g.current_sc = Some(new_sc);
+        g.pressed = None;
     }
 
     fn add_stale(&self, sc: Shortcut) {
@@ -174,12 +199,21 @@ fn parse_code(name: &str) -> AppResult<tauri_plugin_global_shortcut::Code> {
 }
 
 fn shortcut_handler(
-    app: AppHandle,
+    _app: AppHandle,
 ) -> impl Fn(&AppHandle, &Shortcut, ShortcutEvent) + Send + Sync + 'static {
-    move |_app: &AppHandle, _sc: &Shortcut, event: ShortcutEvent| {
-        if event.state == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-            log::info!("快捷键触发");
-            let _ = app.emit(SHORTCUT_EVENT_TRANSLATE, ());
+    move |app: &AppHandle, sc: &Shortcut, event: ShortcutEvent| {
+        let state = app.state::<ShortcutManager>();
+        match event.state {
+            tauri_plugin_global_shortcut::ShortcutState::Pressed => {
+                // 每个按下到释放周期最多激活一次；非当前快捷键不激活
+                if state.begin_press(*sc) {
+                    log::info!("快捷键触发");
+                    let _ = app.emit(SHORTCUT_EVENT_TRANSLATE, ());
+                }
+            }
+            tauri_plugin_global_shortcut::ShortcutState::Released => {
+                state.end_press(*sc);
+            }
         }
     }
 }
@@ -215,7 +249,7 @@ pub fn prepare_replacement(app: &AppHandle, shortcut_str: &str) -> AppResult<Sho
 /// 状态提交本身不会失败；旧快捷键注销失败时保留追踪，供退出时重试。
 pub fn commit_replacement(app: &AppHandle, replacement: ShortcutReplacement) {
     let state = app.state::<ShortcutManager>();
-    state.set_current(Some(replacement.new_sc));
+    state.commit_new_current(replacement.new_sc);
 
     if let Some(old) = replacement.old_sc {
         if let Err(e) = app.global_shortcut().unregister(old) {
@@ -297,12 +331,75 @@ mod tests {
         let manager = ShortcutManager::new();
         let current = shortcut(Code::KeyT);
         let stale = shortcut(Code::KeyY);
-        manager.set_current(Some(current));
+        manager.commit_new_current(current);
         manager.add_stale(stale);
 
         manager.retain_cleanup_failures(vec![current]);
 
         assert_eq!(manager.current_sc(), None);
         assert_eq!(manager.tracked_shortcuts(), vec![current]);
+    }
+
+    #[test]
+    fn first_press_activates_current_shortcut() {
+        let manager = ShortcutManager::new();
+        let current = shortcut(Code::KeyT);
+        manager.commit_new_current(current);
+
+        assert!(manager.begin_press(current));
+    }
+
+    #[test]
+    fn repeat_press_before_release_is_rejected() {
+        let manager = ShortcutManager::new();
+        let current = shortcut(Code::KeyT);
+        manager.commit_new_current(current);
+
+        assert!(manager.begin_press(current));
+        assert!(!manager.begin_press(current));
+    }
+
+    #[test]
+    fn release_allows_next_press_cycle() {
+        let manager = ShortcutManager::new();
+        let current = shortcut(Code::KeyT);
+        manager.commit_new_current(current);
+
+        assert!(manager.begin_press(current));
+        manager.end_press(current);
+        assert!(manager.begin_press(current));
+    }
+
+    #[test]
+    fn non_current_shortcut_never_activates() {
+        let manager = ShortcutManager::new();
+        let current = shortcut(Code::KeyT);
+        let other = shortcut(Code::KeyY);
+        manager.commit_new_current(current);
+
+        assert!(!manager.begin_press(other));
+        assert!(!manager.begin_press(shortcut(Code::KeyU)));
+        assert!(manager.begin_press(current));
+    }
+
+    #[test]
+    fn no_shortcut_registered_never_activates() {
+        let manager = ShortcutManager::new();
+
+        assert!(!manager.begin_press(shortcut(Code::KeyT)));
+    }
+
+    #[test]
+    fn committing_new_shortcut_clears_pressed_state() {
+        let manager = ShortcutManager::new();
+        let old = shortcut(Code::KeyT);
+        let new = shortcut(Code::KeyY);
+        manager.commit_new_current(old);
+
+        assert!(manager.begin_press(old));
+        manager.commit_new_current(new);
+
+        assert!(manager.begin_press(new));
+        assert!(!manager.begin_press(old));
     }
 }

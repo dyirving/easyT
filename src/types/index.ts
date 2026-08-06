@@ -4,7 +4,6 @@
 /**
  * 翻译状态机
  * - idle: 空闲，等待用户触发
- * - capturing: 正在获取选中文本（占位，本轮不实际调用）
  * - translating: 正在等待流式请求的首段正文，或执行一次性翻译
  * - streaming: 已收到正文增量但尚未完成
  * - success: 翻译成功
@@ -12,7 +11,6 @@
  */
 export type TranslationStatus =
   | "idle"
-  | "capturing"
   | "translating"
   | "streaming"
   | "success"

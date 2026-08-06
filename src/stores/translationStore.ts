@@ -8,12 +8,10 @@ interface TranslationStore extends TranslationState {
   setPinned: (pinned: boolean) => void;
   /** 重置为 idle */
   reset: () => void;
-  /** 开始捕获选中文本 */
-  beginCapture: (requestId: string) => void;
   /** 开始一次新的翻译请求（生成新 requestId） */
   startRequest: (originalText: string) => string;
-  /** 将捕获到的文本绑定到当前请求 */
-  applyCapturedText: (requestId: string, originalText: string) => boolean;
+  /** 捕获故障：原子切换到无原文错误态并使旧请求失效 */
+  failCapture: (message: string, kind?: ErrorKind) => void;
   /** 仅当 requestId 仍是最新请求时写入成功结果 */
   succeedRequest: (requestId: string, translatedText: string) => boolean;
   /** 仅当 requestId 仍是最新请求时追加正文增量 */
@@ -49,17 +47,6 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
   togglePinned: () => set({ pinned: !get().pinned }),
   setPinned: (pinned) => set({ pinned }),
   reset: () => set({ ...initialState, pinned: get().pinned }),
-  beginCapture: (requestId) => {
-    set({
-      requestId,
-      originalText: "",
-      translatedText: "",
-      status: "capturing",
-      errorMessage: null,
-      errorKind: null,
-      isPartial: false,
-    });
-  },
   startRequest: (originalText) => {
     const requestId = createTranslationRequestId();
     set({
@@ -73,17 +60,16 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
     });
     return requestId;
   },
-  applyCapturedText: (requestId, originalText) => {
-    if (get().requestId !== requestId) return false;
+  failCapture: (message, kind) => {
     set({
-      originalText,
+      requestId: null,
+      originalText: "",
       translatedText: "",
-      status: "translating",
-      errorMessage: null,
-      errorKind: null,
+      status: "error",
+      errorMessage: message,
+      errorKind: kind ?? null,
       isPartial: false,
     });
-    return true;
   },
   appendTranslationDelta: (requestId, delta) => {
     const current = get();

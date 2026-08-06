@@ -43,8 +43,7 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     "Large language models are trained on massive text corpora."
   );
 
-  const isBusy =
-    status === "translating" || status === "capturing" || status === "streaming";
+  const isBusy = status === "translating" || status === "streaming";
 
   // 触发一次翻译
   // config 由 Rust 端从 AppState 读取，前端只校验本地配置中的 maxTextLength 用于预拦截
@@ -135,7 +134,8 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
         {status === "idle" ? (
           <div className="flex flex-col items-stretch justify-center gap-3 py-6">
             <p className="text-center text-sm text-ink-muted">
-              选中英文文本后按 <kbd className="rounded bg-surface-soft px-1.5 py-0.5 text-xs">Ctrl+T</kbd> 开始翻译
+              有选区时按 <kbd className="rounded bg-surface-soft px-1.5 py-0.5 text-xs">{config.shortcut}</kbd> 翻译；
+              无选区时显示翻译窗口
             </p>
 
             {/* 手动输入区：用于在尚未接入选中文本捕获前验证翻译链路 */}
@@ -167,10 +167,10 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
           </div>
         ) : null}
 
-        {(status === "capturing" || status === "translating") && originalText ? (
+        {status === "translating" ? (
           <div className="space-y-3">
             <OriginalTextPanel text={originalText} />
-            <LoadingState message={status === "capturing" ? "正在获取选中文本…" : "正在翻译…"} />
+            <LoadingState message="正在翻译…" />
           </div>
         ) : null}
 
@@ -179,10 +179,6 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
             <OriginalTextPanel text={originalText} />
             <TranslationPanel text={translatedText} mode="streaming" />
           </div>
-        ) : null}
-
-        {(status === "capturing" || status === "translating") && !originalText ? (
-          <LoadingState message={status === "capturing" ? "正在获取选中文本…" : "正在翻译…"} />
         ) : null}
 
         {status === "success" ? (
@@ -201,7 +197,9 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
             <ErrorState
               message={friendlyError?.friendlyMessage ?? errorMessage ?? "翻译失败"}
               hint={friendlyError?.hint}
-              onRetry={friendlyError?.retryable ? handleRetry : undefined}
+              onRetry={
+                friendlyError?.retryable && originalText ? handleRetry : undefined
+              }
               onOpenSettings={onOpenSettings}
             />
           </div>

@@ -96,3 +96,45 @@ describe("translationStore streaming state", () => {
     buffer.dispose();
   });
 });
+
+describe("translationStore failCapture", () => {
+  beforeEach(() => useTranslationStore.getState().reset());
+
+  it("atomically replaces an active request with a no-text error state", () => {
+    const requestId = useTranslationStore.getState().startRequest("source");
+    useTranslationStore
+      .getState()
+      .appendTranslationDelta(requestId, "partial");
+    useTranslationStore.getState().setPinned(true);
+
+    useTranslationStore.getState().failCapture("剪贴板被占用", "ClipboardError");
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId: null,
+      originalText: "",
+      translatedText: "",
+      status: "error",
+      errorMessage: "剪贴板被占用",
+      errorKind: "ClipboardError",
+      isPartial: false,
+      pinned: true,
+    });
+    expect(
+      useTranslationStore.getState().succeedRequest(requestId, "迟到"),
+    ).toBe(false);
+    expect(
+      useTranslationStore.getState().appendTranslationDelta(requestId, "迟到"),
+    ).toBe(false);
+  });
+
+  it("defaults to a null error kind when omitted", () => {
+    useTranslationStore.getState().failCapture("捕获失败");
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId: null,
+      status: "error",
+      errorMessage: "捕获失败",
+      errorKind: null,
+    });
+  });
+});

@@ -331,7 +331,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           <Field
             label="全局快捷键"
             htmlFor="shortcut"
-            hint="默认 Ctrl+T，可能与其他软件冲突"
+            hint="有选区时翻译，无选区时显示翻译窗口；默认 Ctrl+T，可能与其他软件冲突"
           >
             <ShortcutInput
               value={config.shortcut}

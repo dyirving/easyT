@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { TranslationPage } from "@/pages/TranslationPage";
@@ -24,6 +24,9 @@ export default function App() {
   const [route, setRoute] = useState<Route>("translation");
   const loadConfig = useSettingsStore((s) => s.loadConfig);
   const [bootError, setBootError] = useState<string | null>(null);
+  // 同步读取最新路由：避免 effect 闭包中的陈旧 route 误判快捷键门控
+  const routeRef = useRef(route);
+  routeRef.current = route;
 
   // 启动时加载配置到全局 store
   // 阶段8：同步初始 pinned 状态为 config.pinnedByDefault
@@ -49,8 +52,9 @@ export default function App() {
     Promise.all([
       listen("tray://settings", () => setRoute("settings")),
       listen("tray://show", () => setRoute("translation")),
-      // 全局快捷键触发：捕获选中文本 → 调用翻译 → 显示窗口展示结果
+      // 全局快捷键触发：设置页打开时忽略，其余路由转发给协调器
       listen("shortcut://translate", () => {
+        if (routeRef.current === "settings") return;
         startShortcutTranslation(setRoute);
       }),
     ]).then((fns) => {

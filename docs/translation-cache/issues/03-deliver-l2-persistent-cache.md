@@ -27,3 +27,11 @@ Canonical design: [SDD-translation-cache.md](../../SDD-translation-cache.md)
 - [ ] 测试只使用隔离临时目录，不接触真实安装目录或用户缓存。
 - [ ] schema、UPSERT、重启命中、查询预算、队列满和 write-behind 测试通过。
 
+## Comments
+
+- 2026-08-10 (implemented): L2 跨启动持久化链路已交付。`TranslationCache` 现在按 L1 → 50 ms L2 → 网络查找，完整成功结果同步进入 L1 并通过 512 槽有界队列异步 UPSERT；重启命中会返回完整来源并提升到 L1。
+  - SQLite 使用批准的 `rusqlite 0.40.2`、`default-features=false`、`bundled`；数据库位于传入的 `easyT_Data/cache/translation_cache.sqlite3`，v1 schema 测试覆盖精确列、索引、`WITHOUT ROWID`、统计表和原文不落库。
+  - worker 使用唯一命名线程、512 KiB 栈和单一 Connection；Starting、Degraded、50 ms 超时、迟到 reply、队列满、UPSERT、write-behind、关闭重开及 L1 提升均有隔离临时目录测试。
+  - 验证：Rust 153 项、Vitest 40 项、TypeScript typecheck、前端 build、Rust fmt 与 clippy `-D warnings` 全部通过；Standards/Spec 双轴审查及修复复审通过。
+  - 项目 `rust-version=1.77.2` 未修改。当前 Rust 1.97.1 的 locked 构建通过；尝试安装 1.77.2 做精确 MSRV 实测时，官方 rustup 下载多次只留下缺失 rustc manifest 的不完整工具链，已清理，因此这项旧工具链实测证据仍需在可用环境补跑。
+  - 未执行真实 Qwen/Official API 账号 E2E；发布级手工验收保留到 07 工单。

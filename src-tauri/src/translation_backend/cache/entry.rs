@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::translation_backend::models::BackendResult;
+use crate::translation_backend::models::{BackendMode, BackendResult};
 
 use super::key::CacheKey;
 
@@ -31,11 +31,27 @@ pub enum CacheStatus {
 
 /// L2 worker 生命周期；普通翻译在非 Ready 状态下直接按 miss 继续。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
 pub enum PersistentCacheState {
     Starting,
     Ready,
     Degraded,
     Stopped,
+}
+
+pub(super) fn backend_storage_label(backend: BackendMode) -> &'static str {
+    match backend {
+        BackendMode::OfficialApi => "officialApi",
+        BackendMode::WebGateway => "webGateway",
+    }
+}
+
+pub(super) fn parse_backend_storage_label(value: &str) -> Option<BackendMode> {
+    match value {
+        "officialApi" => Some(BackendMode::OfficialApi),
+        "webGateway" => Some(BackendMode::WebGateway),
+        _ => None,
+    }
 }
 
 /// 缓存查找结果：命中时携带完整译文（Arc 共享，避免复制）。

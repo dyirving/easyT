@@ -8,9 +8,11 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::{mpsc, oneshot};
 
-use super::entry::{CacheEntry, PersistentCacheState};
+use super::entry::{
+    backend_storage_label, parse_backend_storage_label, CacheEntry, PersistentCacheState,
+};
 use super::key::{CacheKey, CACHE_KEY_VERSION};
-use crate::translation_backend::models::{BackendMode, BackendResult, BackendSource};
+use crate::translation_backend::models::{BackendResult, BackendSource};
 use crate::translation_backend::prompt::PROMPT_VERSION;
 
 const CACHE_DIR_NAME: &str = "cache";
@@ -19,11 +21,6 @@ const COMMAND_QUEUE_CAPACITY: usize = 512;
 const WORKER_STACK_BYTES: usize = 512 * 1024;
 const LOOKUP_BUDGET: Duration = Duration::from_millis(50);
 const SHUTDOWN_BUDGET: Duration = Duration::from_secs(1);
-
-const STATE_STARTING: u8 = 0;
-const STATE_READY: u8 = 1;
-const STATE_DEGRADED: u8 = 2;
-const STATE_STOPPED: u8 = 3;
 
 pub struct PersistentStore {
     pub entry: CacheEntry,
@@ -54,7 +51,33 @@ enum CacheCommand {
 /// sender 与原子状态可跨线程共享；SQLite Connection 只存在于命名 worker 闭包内。
 pub struct PersistentCacheWorker {
     sender: mpsc::Sender<CacheCommand>,
-    state: Arc<AtomicU8>,
+    state: Arc<AtomicPersistentCacheState>,
+}
+
+struct AtomicPersistentCacheState(AtomicU8);
+
+impl AtomicPersistentCacheState {
+    fn new(state: PersistentCacheState) -> Self {
+        Self(AtomicU8::new(state as u8))
+    }
+
+    fn load(&self) -> PersistentCacheState {
+        match self.0.load(Ordering::Acquire) {
+            value if value == PersistentCacheState::Starting as u8 => {
+                PersistentCacheState::Starting
+            }
+            value if value == PersistentCacheState::Ready as u8 => PersistentCacheState::Ready,
+            value if value == PersistentCacheState::Degraded as u8 => {
+                PersistentCacheState::Degraded
+            }
+            value if value == PersistentCacheState::Stopped as u8 => PersistentCacheState::Stopped,
+            _ => PersistentCacheState::Degraded,
+        }
+    }
+
+    fn store(&self, state: PersistentCacheState) {
+        self.0.store(state as u8, Ordering::Release);
+    }
 }
 
 impl PersistentCacheWorker {
@@ -64,7 +87,9 @@ impl PersistentCacheWorker {
 
     fn start_inner(data_dir: PathBuf, init_delay: Duration, lookup_delay: Duration) -> Self {
         let (sender, receiver) = mpsc::channel(COMMAND_QUEUE_CAPACITY);
-        let state = Arc::new(AtomicU8::new(STATE_STARTING));
+        let state = Arc::new(AtomicPersistentCacheState::new(
+            PersistentCacheState::Starting,
+        ));
         let worker_state = Arc::clone(&state);
         let spawn = std::thread::Builder::new()
             .name("easyT-cache-db".to_string())
@@ -72,7 +97,7 @@ impl PersistentCacheWorker {
             .spawn(move || worker_main(data_dir, receiver, worker_state, init_delay, lookup_delay));
         if let Err(error) = spawn {
             log::warn!("L2 cache worker failed to start: kind=thread_spawn error={error}");
-            state.store(STATE_DEGRADED, Ordering::Release);
+            state.store(PersistentCacheState::Degraded);
         }
         Self { sender, state }
     }
@@ -92,17 +117,14 @@ impl PersistentCacheWorker {
         drop(receiver);
         Self {
             sender,
-            state: Arc::new(AtomicU8::new(STATE_DEGRADED)),
+            state: Arc::new(AtomicPersistentCacheState::new(
+                PersistentCacheState::Degraded,
+            )),
         }
     }
 
     pub fn state(&self) -> PersistentCacheState {
-        match self.state.load(Ordering::Acquire) {
-            STATE_STARTING => PersistentCacheState::Starting,
-            STATE_READY => PersistentCacheState::Ready,
-            STATE_DEGRADED => PersistentCacheState::Degraded,
-            _ => PersistentCacheState::Stopped,
-        }
+        self.state.load()
     }
 
     pub async fn lookup(&self, key: CacheKey, epoch: u64) -> PersistentLookup {
@@ -150,7 +172,7 @@ impl PersistentCacheWorker {
         {
             log::warn!("cache_shutdown_timeout");
         } else if self.sender.is_closed() {
-            self.state.store(STATE_STOPPED, Ordering::Release);
+            self.state.store(PersistentCacheState::Stopped);
         }
     }
 
@@ -176,7 +198,7 @@ impl PersistentCacheWorker {
 fn worker_main(
     data_dir: PathBuf,
     mut receiver: mpsc::Receiver<CacheCommand>,
-    state: Arc<AtomicU8>,
+    state: Arc<AtomicPersistentCacheState>,
     init_delay: Duration,
     lookup_delay: Duration,
 ) {
@@ -185,14 +207,14 @@ fn worker_main(
     }
     let mut connection = match open_connection(&data_dir) {
         Ok(connection) => {
-            state.store(STATE_READY, Ordering::Release);
+            state.store(PersistentCacheState::Ready);
             Some(connection)
         }
         Err(error) => {
             log::warn!(
                 "cache_worker_state_changed: from=starting to=degraded reason=init error={error}"
             );
-            state.store(STATE_DEGRADED, Ordering::Release);
+            state.store(PersistentCacheState::Degraded);
             None
         }
     };
@@ -230,14 +252,14 @@ fn worker_main(
             }
             CacheCommand::Shutdown { reply } => {
                 connection.take();
-                state.store(STATE_STOPPED, Ordering::Release);
+                state.store(PersistentCacheState::Stopped);
                 let _ = reply.send(());
                 return;
             }
         }
     }
     connection.take();
-    state.store(STATE_STOPPED, Ordering::Release);
+    state.store(PersistentCacheState::Stopped);
 }
 
 fn database_path(data_dir: &Path) -> PathBuf {
@@ -336,7 +358,7 @@ fn upsert_entry(connection: &Connection, store: &PersistentStore) -> rusqlite::R
             i64::from(PROMPT_VERSION),
             store.target_language,
             entry.result.translated_text,
-            backend_label(entry.result.source.backend),
+            backend_storage_label(entry.result.source.backend),
             entry.result.source.provider,
             entry.result.source.model,
             entry.generated_at_ms,
@@ -389,7 +411,7 @@ fn lookup_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<Pers
     else {
         return Ok(PersistentLookup::Miss);
     };
-    let Some(backend) = parse_backend(&backend) else {
+    let Some(backend) = parse_backend_storage_label(&backend) else {
         return Ok(PersistentLookup::Miss);
     };
     if text.is_empty() || hits < 0 || source_bytes < 0 || text_bytes < 0 || logical_bytes < 0 {
@@ -415,21 +437,6 @@ fn lookup_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<Pers
     }))
 }
 
-fn backend_label(backend: BackendMode) -> &'static str {
-    match backend {
-        BackendMode::OfficialApi => "officialApi",
-        BackendMode::WebGateway => "webGateway",
-    }
-}
-
-fn parse_backend(value: &str) -> Option<BackendMode> {
-    match value {
-        "officialApi" => Some(BackendMode::OfficialApi),
-        "webGateway" => Some(BackendMode::WebGateway),
-        _ => None,
-    }
-}
-
 fn to_i64(value: u64) -> rusqlite::Result<i64> {
     i64::try_from(value).map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
 }
@@ -437,7 +444,6 @@ fn to_i64(value: u64) -> rusqlite::Result<i64> {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    use std::path::PathBuf;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -445,23 +451,13 @@ mod tests {
 
     use crate::translation_backend::cache::entry::{CacheEntry, PersistentCacheState};
     use crate::translation_backend::cache::key::CacheKey;
+    use crate::translation_backend::cache::test_support::TestDir;
     use crate::translation_backend::models::{BackendMode, BackendResult, BackendSource};
 
-    use super::{database_path, PersistentCacheWorker, PersistentLookup, PersistentStore};
-
-    struct TestDir(PathBuf);
-
-    impl TestDir {
-        fn new() -> Self {
-            Self(std::env::temp_dir().join(format!("easyT-cache-test-{}", uuid::Uuid::new_v4())))
-        }
-    }
-
-    impl Drop for TestDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use super::{
+        database_path, PersistentCacheWorker, PersistentLookup, PersistentStore,
+        COMMAND_QUEUE_CAPACITY,
+    };
 
     fn store(seed: u32, translated_text: &str) -> PersistentStore {
         let result = BackendResult {
@@ -490,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_translation_is_available_after_worker_restart() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("worker");
         let key = CacheKey::from_seed(7);
 
         let worker = PersistentCacheWorker::start(dir.0.clone());
@@ -510,7 +506,7 @@ mod tests {
 
     #[tokio::test]
     async fn schema_v1_contains_only_approved_columns_and_no_source_text() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("schema");
         let worker = PersistentCacheWorker::start(dir.0.clone());
         worker.wait_until_ready().await;
         worker.shutdown().await;
@@ -611,7 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn upsert_replaces_the_complete_result_for_the_same_key() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("upsert");
         let worker = PersistentCacheWorker::start(dir.0.clone());
         worker.wait_until_ready().await;
         assert!(worker.try_store(store(9, "旧译文"), 0));
@@ -631,7 +627,7 @@ mod tests {
 
     #[tokio::test]
     async fn starting_and_failed_initialization_are_non_blocking() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("states");
         let delayed = PersistentCacheWorker::start_with_test_delays(
             dir.0.clone(),
             Duration::from_millis(100),
@@ -669,7 +665,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_timeout_discards_late_worker_reply_within_budget() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("budget");
         let worker = PersistentCacheWorker::start_with_test_delays(
             dir.0.clone(),
             Duration::ZERO,
@@ -685,7 +681,7 @@ mod tests {
 
     #[tokio::test]
     async fn full_bounded_queue_rejects_write_behind_without_waiting() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("queue");
         let worker = PersistentCacheWorker::start_with_test_delays(
             dir.0.clone(),
             Duration::ZERO,
@@ -695,14 +691,14 @@ mod tests {
 
         let _ = worker.lookup(CacheKey::from_seed(1), 0).await;
         let started = Instant::now();
-        let mut rejected = false;
+        let mut accepted = 0;
         for seed in 0..600 {
             if !worker.try_store(store(seed, "译文"), 0) {
-                rejected = true;
                 break;
             }
+            accepted += 1;
         }
-        assert!(rejected, "the 512-slot queue should become full");
+        assert_eq!(accepted, COMMAND_QUEUE_CAPACITY);
         assert!(started.elapsed() < Duration::from_millis(100));
         worker.shutdown().await;
     }

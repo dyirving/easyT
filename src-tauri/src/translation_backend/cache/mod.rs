@@ -136,17 +136,15 @@ impl TranslationCache {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct TestDir(std::path::PathBuf);
+pub(crate) mod test_support {
+    pub(crate) struct TestDir(pub(crate) std::path::PathBuf);
 
     impl TestDir {
-        fn new() -> Self {
-            Self(
-                std::env::temp_dir()
-                    .join(format!("easyT-cache-facade-test-{}", uuid::Uuid::new_v4())),
-            )
+        pub(crate) fn new(prefix: &str) -> Self {
+            Self(std::env::temp_dir().join(format!(
+                "easyT-cache-{prefix}-test-{}",
+                uuid::Uuid::new_v4()
+            )))
         }
     }
 
@@ -155,6 +153,12 @@ mod tests {
             let _ = std::fs::remove_dir_all(&self.0);
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::TestDir;
+    use super::*;
 
     fn input(text: &str, target: &str) -> NormalizedCacheInput {
         prepare_cache_input(text, target)
@@ -248,7 +252,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_behind_survives_cache_restart_and_promotes_to_l1() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("facade");
         let input = input("hello", "zh");
         let first = TranslationCache::start(&dir.0);
         first.wait_until_persistent_ready().await;
@@ -268,7 +272,7 @@ mod tests {
 
     #[tokio::test]
     async fn unavailable_persistent_cache_does_not_disable_l1() {
-        let dir = TestDir::new();
+        let dir = TestDir::new("degraded");
         std::fs::create_dir_all(&dir.0).expect("temp root should be created");
         let invalid_data_dir = dir.0.join("file-not-directory");
         std::fs::write(&invalid_data_dir, b"file").expect("invalid data root should be created");

@@ -3,8 +3,10 @@
 //! 纯函数模块：不持有状态、不读取配置、不发网络。
 //! 规范化与键编码在锁外完成，把受控的所有权（Vec 字节、len）交给缓存层。
 
-use crate::translation_backend::models::{BackendMode, BackendResult};
+use crate::translation_backend::models::BackendResult;
 use crate::translation_backend::prompt::PROMPT_VERSION;
+
+use super::entry::backend_storage_label;
 
 /// 键编码方案版本：编码、规范化或输出参数集合变化时手动提升。
 pub const CACHE_KEY_VERSION: u32 = 1;
@@ -161,7 +163,7 @@ pub fn logical_size(input: &NormalizedCacheInput, result: &BackendResult) -> u64
     32 + input.normalized_source_bytes as u64
         + input.target_language.len() as u64
         + result.translated_text.len() as u64
-        + backend_label(result.source.backend).len() as u64
+        + backend_storage_label(result.source.backend).len() as u64
         + result.source.provider.len() as u64
         + result.source.model.len() as u64
         + 256
@@ -174,17 +176,10 @@ pub fn is_definitely_oversized(input: &NormalizedCacheInput) -> bool {
         > MAX_ENTRY_LOGICAL_BYTES
 }
 
-/// BackendMode 的 serde camelCase 标签长度，与 models.rs 序列化保持一致。
-fn backend_label(mode: BackendMode) -> &'static str {
-    match mode {
-        BackendMode::OfficialApi => "officialApi",
-        BackendMode::WebGateway => "webGateway",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::translation_backend::models::BackendMode;
 
     /// 把输入实参按固定流水线转成十六进制键，测试断言用。
     fn key_hex(text: &str, target: &str) -> String {
@@ -321,8 +316,11 @@ mod tests {
 
     #[test]
     fn web_gateway_backend_label_uses_camel_case() {
-        assert_eq!(backend_label(BackendMode::WebGateway), "webGateway");
-        assert_eq!(backend_label(BackendMode::OfficialApi), "officialApi");
+        assert_eq!(backend_storage_label(BackendMode::WebGateway), "webGateway");
+        assert_eq!(
+            backend_storage_label(BackendMode::OfficialApi),
+            "officialApi"
+        );
     }
 
     /// 固定向量：由 blake3 1.8.6 生成，编码规则/版本变化时必须同步更新

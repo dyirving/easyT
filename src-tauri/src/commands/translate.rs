@@ -5,7 +5,7 @@ use crate::app_error::{AppError, AppResult};
 use crate::commands::config::AppState;
 use crate::translation_backend::models::BackendProgress;
 use crate::translation_backend::{
-    BackendMode, BackendRequest, TranslationBackend, TranslationProgress,
+    BackendMode, BackendRequest, TranslationBackend, TranslationOptions, TranslationProgress,
 };
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
@@ -117,6 +117,7 @@ impl TranslationRequestManager {
 ///
 /// latest-wins 仍由 TranslationRequestManager 唯一负责。
 /// WebGateway 不会自动创建登录窗口或回退到付费 API。
+/// forceRefresh 为 true 时表示"重新翻译"（绕过缓存读取并在成功后覆盖共享缓存）。
 #[tauri::command]
 pub async fn translate_text(
     state: State<'_, AppState>,
@@ -124,6 +125,7 @@ pub async fn translate_text(
     backend: State<'_, Arc<TranslationBackend>>,
     text: String,
     target_language: String,
+    force_refresh: bool,
 ) -> AppResult<crate::llm::models::TranslationResult> {
     let config = state.snapshot()?;
     validate_translate_request(&config, &text)?;
@@ -132,17 +134,16 @@ pub async fn translate_text(
         text,
         target_language,
     };
+    let options = TranslationOptions { force_refresh };
 
     // 提取 Arc<TranslationBackend>，避免 State 的非静态生命周期逃逸到 run_latest 中。
     let backend = backend.inner().clone();
     let result = request_manager
         .run_latest(async move {
             backend
-                .translate(&config, request)
+                .translate(&config, request, options)
                 .await
-                .map(|r| crate::llm::models::TranslationResult {
-                    translated_text: r.translated_text,
-                })
+                .map(translate_outcome_to_result)
                 .map_err(AppError::from)
         })
         .await?;
@@ -151,6 +152,8 @@ pub async fn translate_text(
 }
 
 /// 流式翻译文本：通过每次请求独立的 Tauri Channel 上报正文增量。
+/// 参数数量按 SDD 7.1 合同保持：requestId/text/targetLanguage/forceRefresh/onEvent。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn translate_text_stream(
     state: State<'_, AppState>,
@@ -159,6 +162,7 @@ pub async fn translate_text_stream(
     request_id: String,
     text: String,
     target_language: String,
+    force_refresh: bool,
     on_event: Channel<TranslationStreamEvent>,
 ) -> AppResult<crate::llm::models::TranslationResult> {
     if request_id.trim().is_empty() {
@@ -172,6 +176,7 @@ pub async fn translate_text_stream(
         text,
         target_language,
     };
+    let options = TranslationOptions { force_refresh };
     let backend = backend.inner().clone();
     let progress: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
         request_id,
@@ -181,16 +186,25 @@ pub async fn translate_text_stream(
     let result = request_manager
         .run_latest(async move {
             backend
-                .translate_stream(&config, request, progress)
+                .translate_stream(&config, request, options, progress)
                 .await
-                .map(|result| crate::llm::models::TranslationResult {
-                    translated_text: result.translated_text,
-                })
+                .map(translate_outcome_to_result)
                 .map_err(AppError::from)
         })
         .await?;
 
     Ok(result)
+}
+
+/// 把统一 outcome 映射为前端命令结果；fromCache 在未接入缓存前始终为 false。
+fn translate_outcome_to_result(
+    outcome: crate::translation_backend::TranslationOutcome,
+) -> crate::llm::models::TranslationResult {
+    let from_cache = outcome.is_from_cache();
+    crate::llm::models::TranslationResult {
+        translated_text: outcome.result.translated_text,
+        from_cache,
+    }
 }
 
 fn validate_translate_request(config: &crate::config::AppConfig, text: &str) -> AppResult<()> {
@@ -328,5 +342,29 @@ mod tests {
             .expect_err("closed channel must cancel the request");
 
         assert!(matches!(error, BackendError::Cancelled));
+    }
+
+    #[test]
+    fn outcome_maps_to_frontend_result_with_from_cache() {
+        use crate::translation_backend::models::{BackendResult, BackendSource, CacheStatus};
+        use crate::translation_backend::{BackendMode, TranslationOutcome};
+
+        let outcome = TranslationOutcome {
+            result: BackendResult {
+                translated_text: "你好".to_string(),
+                source: BackendSource {
+                    backend: BackendMode::OfficialApi,
+                    provider: "agnes".to_string(),
+                    model: "agnes-2.0-flash".to_string(),
+                },
+            },
+            cache_status: CacheStatus::Miss,
+        };
+
+        let result = super::translate_outcome_to_result(outcome);
+        let json = serde_json::to_value(&result).expect("result should serialize");
+
+        assert_eq!(json["translatedText"], "你好");
+        assert_eq!(json["fromCache"], false);
     }
 }

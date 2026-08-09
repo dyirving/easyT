@@ -47,7 +47,7 @@ async function translateCapturedText(
   }
 
   await showAndFocusWindow();
-  await runTranslationRequest(requestId, text, config);
+  await runTranslationRequest(requestId, text, config, false);
 }
 
 /** 处理捕获结果：有效文本、无选区或其他捕获故障三分支 */

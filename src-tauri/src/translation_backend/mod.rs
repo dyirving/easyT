@@ -20,12 +20,16 @@ pub mod prompt;
 pub mod web_gateway;
 
 pub use error::BackendError;
-pub use models::{BackendMode, BackendRequest, BackendResult, TranslationProgress};
+pub use models::{
+    BackendMode, BackendRequest, BackendResult, TranslationOptions, TranslationOutcome,
+    TranslationProgress,
+};
 
 use std::sync::Arc;
 
 use crate::config::AppConfig;
 
+use self::models::CacheStatus;
 use self::official_api::OfficialApiAdapter;
 use self::web_gateway::WebGateway;
 
@@ -85,17 +89,21 @@ impl TranslationBackend {
     /// - WebGateway：调用 WebGateway，按 provider 转发到具体 QwenWebAdapter
     ///
     /// 共同输入校验在此完成；Adapter 内部只校验与自己协议相关的字段。
+    /// options.force_refresh 决定缓存策略（Use/Refresh），策略结果随 outcome 返回。
     pub async fn translate(
         &self,
         config: &AppConfig,
         request: BackendRequest,
-    ) -> Result<BackendResult, BackendError> {
+        options: TranslationOptions,
+    ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
+        let policy = resolve_cache_policy(config, options);
 
-        match config.backend_mode {
+        let result = match config.backend_mode {
             BackendMode::OfficialApi => self.official_api.translate(config, request).await,
             BackendMode::WebGateway => self.web_gateway.translate(config, request).await,
-        }
+        };
+        Ok(outcome_for(result?, policy))
     }
 
     /// 流式翻译入口：只向 progress 报告可见正文，完成后仍返回完整结果。
@@ -103,11 +111,13 @@ impl TranslationBackend {
         &self,
         config: &AppConfig,
         request: BackendRequest,
+        options: TranslationOptions,
         progress: std::sync::Arc<dyn TranslationProgress>,
-    ) -> Result<BackendResult, BackendError> {
+    ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
+        let policy = resolve_cache_policy(config, options);
 
-        match config.backend_mode {
+        let result = match config.backend_mode {
             BackendMode::OfficialApi => {
                 self.official_api
                     .translate_stream(config, request, progress)
@@ -118,7 +128,8 @@ impl TranslationBackend {
                     .translate_stream(config, request, progress)
                     .await
             }
-        }
+        };
+        Ok(outcome_for(result?, policy))
     }
 
     /// 测试连接：必须通过当前 Adapter 进行真实轻量请求
@@ -175,9 +186,44 @@ fn validate_test_connection(config: &AppConfig) -> Result<(), BackendError> {
     Ok(())
 }
 
+/// 缓存策略：唯一决策点。缓存模块接入后，Use 分支在此执行查找/回填。
+/// - WebGateway 且保存网页历史：Bypass（测试连接/诊断/saveHistory 同样绕过）
+/// - 用户显式重新翻译：Refresh
+/// - 其余：Use
+fn resolve_cache_policy(config: &AppConfig, options: TranslationOptions) -> CachePolicy {
+    if config.backend_mode == BackendMode::WebGateway && config.web_gateway.save_history {
+        CachePolicy::Bypass
+    } else if options.force_refresh {
+        CachePolicy::Refresh
+    } else {
+        CachePolicy::Use
+    }
+}
+
+/// 未接入实际缓存：Use 视为 miss，Refresh/Bypass 报告对应来源状态，fromCache 均为 false。
+fn outcome_for(result: BackendResult, policy: CachePolicy) -> TranslationOutcome {
+    let cache_status = match policy {
+        CachePolicy::Use => CacheStatus::Miss,
+        CachePolicy::Refresh => CacheStatus::Refreshed,
+        CachePolicy::Bypass => CacheStatus::Bypassed,
+    };
+    TranslationOutcome {
+        result,
+        cache_status,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CachePolicy {
+    Use,
+    Refresh,
+    Bypass,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::translation_backend::models::BackendSource;
 
     #[test]
     fn validate_translate_rejects_empty_text() {
@@ -201,5 +247,98 @@ mod tests {
         };
         let err = validate_translate_request(&request, &config).expect_err("should reject");
         assert!(matches!(err, BackendError::ConfigInvalid(_)));
+    }
+
+    #[test]
+    fn plain_request_is_use_policy() {
+        let config = crate::config::default_config();
+        assert_eq!(
+            resolve_cache_policy(
+                &config,
+                TranslationOptions {
+                    force_refresh: false
+                }
+            ),
+            CachePolicy::Use
+        );
+    }
+
+    #[test]
+    fn explicit_refresh_is_refresh_policy() {
+        let config = crate::config::default_config();
+        assert_eq!(
+            resolve_cache_policy(
+                &config,
+                TranslationOptions {
+                    force_refresh: true
+                }
+            ),
+            CachePolicy::Refresh
+        );
+    }
+
+    #[test]
+    fn web_gateway_save_history_bypasses_even_when_refreshing() {
+        let mut config = crate::config::default_config();
+        config.backend_mode = BackendMode::WebGateway;
+        config.web_gateway.save_history = true;
+        assert_eq!(
+            resolve_cache_policy(
+                &config,
+                TranslationOptions {
+                    force_refresh: true
+                }
+            ),
+            CachePolicy::Bypass
+        );
+    }
+
+    #[test]
+    fn web_gateway_without_save_history_uses_policy() {
+        let mut config = crate::config::default_config();
+        config.backend_mode = BackendMode::WebGateway;
+        config.web_gateway.save_history = false;
+        assert_eq!(
+            resolve_cache_policy(
+                &config,
+                TranslationOptions {
+                    force_refresh: false
+                }
+            ),
+            CachePolicy::Use
+        );
+        assert_eq!(
+            resolve_cache_policy(
+                &config,
+                TranslationOptions {
+                    force_refresh: true
+                }
+            ),
+            CachePolicy::Refresh
+        );
+    }
+
+    #[test]
+    fn outcome_reports_non_cache_status_without_cache() {
+        let result = BackendResult {
+            translated_text: "你好".to_string(),
+            source: BackendSource {
+                backend: BackendMode::OfficialApi,
+                provider: "agnes".to_string(),
+                model: "agnes-2.0-flash".to_string(),
+            },
+        };
+        assert_eq!(
+            outcome_for(result.clone(), CachePolicy::Use).cache_status,
+            CacheStatus::Miss
+        );
+        assert_eq!(
+            outcome_for(result.clone(), CachePolicy::Refresh).cache_status,
+            CacheStatus::Refreshed
+        );
+        assert_eq!(
+            outcome_for(result, CachePolicy::Bypass).cache_status,
+            CacheStatus::Bypassed
+        );
     }
 }

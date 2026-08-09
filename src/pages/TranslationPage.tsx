@@ -11,6 +11,7 @@ import { runTranslationRequest } from "@/services/translationRunner";
 import { TranslationHeader } from "@/components/TranslationHeader";
 import { OriginalTextPanel } from "@/components/OriginalTextPanel";
 import { TranslationPanel } from "@/components/TranslationPanel";
+import { CacheNotice } from "@/components/CacheNotice";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorState } from "@/components/ErrorState";
 import { Button } from "@/components/ui/Button";
@@ -31,6 +32,8 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     errorMessage,
     errorKind,
     isPartial,
+    fromCache,
+    refreshErrorMessage,
     pinned,
     startRequest,
     failRequest,
@@ -43,12 +46,15 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     "Large language models are trained on massive text corpora."
   );
 
-  const isBusy = status === "translating" || status === "streaming";
+  const isBusy =
+    status === "translating" ||
+    status === "streaming" ||
+    status === "refreshing";
 
-  // 触发一次翻译
+  // 触发一次翻译；forceRefresh=true 表示"重新翻译"（绕过缓存读取）。
   // config 由 Rust 端从 AppState 读取，前端只校验本地配置中的 maxTextLength 用于预拦截
-  const handleTranslate = async (text: string) => {
-    const requestId = startRequest(text);
+  const handleTranslate = async (text: string, forceRefresh = false) => {
+    const requestId = startRequest(text, forceRefresh);
 
     if (!text.trim()) {
       failRequest(
@@ -68,11 +74,12 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
       return;
     }
 
-    await runTranslationRequest(requestId, text, { ...config });
+    await runTranslationRequest(requestId, text, { ...config }, forceRefresh);
   };
 
+  // 右上角"重新翻译"：始终携带强制刷新意图
   const handleRetry = () => {
-    if (originalText) void handleTranslate(originalText);
+    if (originalText) void handleTranslate(originalText, true);
   };
 
   // 切换固定状态：同步到 store 与 Rust 端
@@ -181,9 +188,30 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
           </div>
         ) : null}
 
+        {status === "refreshing" ? (
+          <div className="space-y-3">
+            <OriginalTextPanel text={originalText} />
+            {fromCache ? <CacheNotice /> : null}
+            <TranslationPanel text={translatedText} mode="complete" />
+            <p className="flex items-center gap-2 text-xs text-ink-muted">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+              正在重新翻译
+            </p>
+          </div>
+        ) : null}
+
         {status === "success" ? (
           <div className="space-y-3">
             <OriginalTextPanel text={originalText} />
+            {fromCache ? <CacheNotice /> : null}
+            {refreshErrorMessage ? (
+              <div
+                role="alert"
+                className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger"
+              >
+                重新翻译失败，当前仍显示此前的本机缓存译文。{refreshErrorMessage}
+              </div>
+            ) : null}
             <TranslationPanel text={translatedText} mode="complete" />
           </div>
         ) : null}

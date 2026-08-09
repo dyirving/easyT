@@ -69,6 +69,45 @@ pub struct BackendSource {
     pub model: String,
 }
 
+/// 翻译请求选项：把界面意图完整传递到 TranslationBackend。
+/// force_refresh=false 为普通翻译（Use 策略）；true 为"重新翻译"（Refresh 策略，
+/// 绕过缓存读取并在成功后覆盖共享缓存）。Bypass 策略由后端根据配置自行决定。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TranslationOptions {
+    pub force_refresh: bool,
+}
+
+/// 结果来源状态：结果如何产生。
+/// 本阶段尚未接入实际缓存，后端只产出 Miss / Refreshed / Bypassed；
+/// MemoryHit / PersistentHit 由后续缓存垂直切片构造。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum CacheStatus {
+    Miss,
+    MemoryHit,
+    PersistentHit,
+    Refreshed,
+    Bypassed,
+}
+
+/// 翻译后端统一结果：完整译文 + 来源状态同行返回。
+/// Adapter 合同（BackendResult）不变，来源状态只在 seam 处附加。
+#[derive(Debug, Clone)]
+pub struct TranslationOutcome {
+    pub result: BackendResult,
+    pub cache_status: CacheStatus,
+}
+
+impl TranslationOutcome {
+    /// 前端 fromCache 布尔值的唯一来源；未接入缓存时始终为 false。
+    pub fn is_from_cache(&self) -> bool {
+        matches!(
+            self.cache_status,
+            CacheStatus::MemoryHit | CacheStatus::PersistentHit
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +143,54 @@ mod tests {
         let json = "\"officialApi\"";
         let mode: BackendMode = serde_json::from_str(json).expect("deserialize");
         assert_eq!(mode, BackendMode::OfficialApi);
+    }
+
+    #[test]
+    fn translation_options_default_is_plain_use() {
+        assert_eq!(
+            TranslationOptions::default(),
+            TranslationOptions {
+                force_refresh: false
+            }
+        );
+    }
+
+    #[test]
+    fn outcome_from_cache_marks_only_cache_hits() {
+        let result = || BackendResult {
+            translated_text: "你好".to_string(),
+            source: BackendSource {
+                backend: BackendMode::OfficialApi,
+                provider: "agnes".to_string(),
+                model: "agnes-2.0-flash".to_string(),
+            },
+        };
+
+        let miss = TranslationOutcome {
+            result: result(),
+            cache_status: CacheStatus::Miss,
+        };
+        let refreshed = TranslationOutcome {
+            result: result(),
+            cache_status: CacheStatus::Refreshed,
+        };
+        let bypassed = TranslationOutcome {
+            result: result(),
+            cache_status: CacheStatus::Bypassed,
+        };
+        let memory_hit = TranslationOutcome {
+            result: result(),
+            cache_status: CacheStatus::MemoryHit,
+        };
+        let persistent_hit = TranslationOutcome {
+            result: result(),
+            cache_status: CacheStatus::PersistentHit,
+        };
+
+        assert!(!miss.is_from_cache());
+        assert!(!refreshed.is_from_cache());
+        assert!(!bypassed.is_from_cache());
+        assert!(memory_hit.is_from_cache());
+        assert!(persistent_hit.is_from_cache());
     }
 }

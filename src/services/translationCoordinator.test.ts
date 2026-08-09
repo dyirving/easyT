@@ -141,11 +141,12 @@ it("T-006 leaves route, window and store untouched while capture is pending", as
     expect(positionWindowNearMouse).toHaveBeenCalledWith(false);
     expect(win.show).toHaveBeenCalledTimes(1);
     expect(win.setFocus).toHaveBeenCalledTimes(1);
-    expect(runTranslationRequest).toHaveBeenCalledTimes(1);
+expect(runTranslationRequest).toHaveBeenCalledTimes(1);
     expect(runTranslationRequest).toHaveBeenCalledWith(
       state.requestId,
       "Hello World",
       expect.objectContaining({ shortcut: "Ctrl+T" }),
+      false,
     );
     expect(order).toEqual([
       "route:translation",
@@ -159,9 +160,11 @@ it("T-006 leaves route, window and store untouched while capture is pending", as
   it("T-008 treats NoSelectedText as a pure display restore in every state", async () => {
     const setups: Record<string, () => void> = {
       idle: () => {},
-      success: () => {
+success: () => {
         const id = useTranslationStore.getState().startRequest("source");
-        useTranslationStore.getState().succeedRequest(id, "译文");
+        useTranslationStore
+          .getState()
+          .succeedRequest(id, { translatedText: "译文", fromCache: false });
       },
       streaming: () => {
         const id = useTranslationStore.getState().startRequest("source");
@@ -241,9 +244,14 @@ it("T-006 leaves route, window and store untouched while capture is pending", as
         requestIds.push(state.requestId);
       }
     });
-    mockedRunTranslationRequest.mockImplementation(async (requestId, text) => {
+mockedRunTranslationRequest.mockImplementation(async (requestId, text) => {
       order.push(`run:${text}`);
-      useTranslationStore.getState().succeedRequest(requestId, `译文(${text})`);
+      useTranslationStore
+        .getState()
+        .succeedRequest(requestId, {
+          translatedText: `译文(${text})`,
+          fromCache: false,
+        });
     });
 
     startShortcutTranslation(setRoute);
@@ -266,8 +274,10 @@ it("T-006 leaves route, window and store untouched while capture is pending", as
       translatedText: "译文(B)",
       status: "success",
     });
-    expect(
-      useTranslationStore.getState().succeedRequest(requestIds[0], "迟到"),
+expect(
+      useTranslationStore
+        .getState()
+        .succeedRequest(requestIds[0], { translatedText: "迟到", fromCache: false }),
     ).toBe(false);
   });
 });

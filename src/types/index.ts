@@ -6,6 +6,7 @@
  * - idle: 空闲，等待用户触发
  * - translating: 正在等待流式请求的首段正文，或执行一次性翻译
  * - streaming: 已收到正文增量但尚未完成
+ * - refreshing: 保留旧缓存译文的同时重新翻译，失败时回退到旧结果
  * - success: 翻译成功
  * - error: 翻译失败
  */
@@ -13,6 +14,7 @@ export type TranslationStatus =
   | "idle"
   | "translating"
   | "streaming"
+  | "refreshing"
   | "success"
   | "error";
 
@@ -29,6 +31,10 @@ export interface TranslationState {
   errorKind: ErrorKind | null;
   /** 当前译文是否只收到部分正文，不能作为完整译文复制 */
   isPartial: boolean;
+  /** 当前译文是否来自本机缓存；未接入缓存时始终为 false */
+  fromCache: boolean;
+  /** 重新翻译失败时的独立错误提示，保留旧缓存译文 */
+  refreshErrorMessage: string | null;
   pinned: boolean;
 }
 

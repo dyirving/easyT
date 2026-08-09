@@ -4,6 +4,9 @@ import {
   useTranslationStore,
 } from "./translationStore";
 
+const cachedResult = { translatedText: "缓存译文", fromCache: true };
+const freshResult = { translatedText: "新译文", fromCache: false };
+
 describe("translationStore streaming state", () => {
   beforeEach(() => useTranslationStore.getState().reset());
   afterEach(() => vi.useRealTimers());
@@ -18,13 +21,15 @@ describe("translationStore streaming state", () => {
       translatedText: "译",
       status: "streaming",
       isPartial: false,
+      fromCache: false,
     });
 
-    useTranslationStore.getState().succeedRequest(requestId, "译文");
+    useTranslationStore.getState().succeedRequest(requestId, freshResult);
     expect(useTranslationStore.getState()).toMatchObject({
-      translatedText: "译文",
+      translatedText: "新译文",
       status: "success",
       isPartial: false,
+      fromCache: false,
     });
   });
 
@@ -120,7 +125,9 @@ describe("translationStore failCapture", () => {
       pinned: true,
     });
     expect(
-      useTranslationStore.getState().succeedRequest(requestId, "迟到"),
+      useTranslationStore
+        .getState()
+        .succeedRequest(requestId, { translatedText: "迟到", fromCache: false }),
     ).toBe(false);
     expect(
       useTranslationStore.getState().appendTranslationDelta(requestId, "迟到"),
@@ -135,6 +142,181 @@ describe("translationStore failCapture", () => {
       status: "error",
       errorMessage: "捕获失败",
       errorKind: null,
+    });
+  });
+});
+
+describe("translationStore refresh state machine", () => {
+  beforeEach(() => useTranslationStore.getState().reset());
+
+  function cachedSuccess(originalText: string) {
+    const requestId = useTranslationStore.getState().startRequest(originalText);
+    useTranslationStore.getState().succeedRequest(requestId, cachedResult);
+  }
+
+  it("refresh keeps a same-text cached result visible while refreshing", () => {
+    cachedSuccess("source");
+    useTranslationStore.getState().setPinned(true);
+
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId: refreshId,
+      originalText: "source",
+      translatedText: "缓存译文",
+      status: "refreshing",
+      fromCache: true,
+      refreshErrorMessage: null,
+      pinned: true,
+    });
+  });
+
+  it("refresh with a non-cached current result behaves like a normal start", () => {
+    const plainId = useTranslationStore.getState().startRequest("source");
+    useTranslationStore.getState().succeedRequest(plainId, freshResult);
+
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId: refreshId,
+      translatedText: "",
+      status: "translating",
+      fromCache: false,
+    });
+  });
+
+  it("refresh with a different text behaves like a normal start", () => {
+    cachedSuccess("source");
+
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("other", true);
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId: refreshId,
+      translatedText: "",
+      status: "translating",
+      fromCache: false,
+    });
+  });
+
+  it("ordinary start clears cached text, fromCache and refresh error", () => {
+    cachedSuccess("source");
+    const failedRefresh = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+    useTranslationStore
+      .getState()
+      .failRefreshRequest(failedRefresh, "网络请求失败", "BackendNetwork");
+
+    const requestId = useTranslationStore.getState().startRequest("source");
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      requestId,
+      translatedText: "",
+      status: "translating",
+      fromCache: false,
+      refreshErrorMessage: null,
+    });
+  });
+
+  it("successful refresh replaces the text and adopts the result cache flag", () => {
+    cachedSuccess("source");
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    expect(
+      useTranslationStore.getState().succeedRequest(refreshId, freshResult),
+    ).toBe(true);
+    expect(useTranslationStore.getState()).toMatchObject({
+      translatedText: "新译文",
+      status: "success",
+      fromCache: false,
+      refreshErrorMessage: null,
+    });
+  });
+
+  it("failed refresh keeps the cached text and reports a refresh error", () => {
+    cachedSuccess("source");
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    expect(
+      useTranslationStore
+        .getState()
+        .failRefreshRequest(refreshId, "网络请求失败", "BackendNetwork"),
+    ).toBe(true);
+    expect(useTranslationStore.getState()).toMatchObject({
+      translatedText: "缓存译文",
+      status: "success",
+      fromCache: true,
+      refreshErrorMessage: "网络请求失败",
+      errorKind: null,
+    });
+  });
+
+  it("failRefreshRequest rejects stale or non-refreshing states", () => {
+    const plainId = useTranslationStore.getState().startRequest("source");
+    expect(
+      useTranslationStore.getState().failRefreshRequest(plainId, "失败"),
+    ).toBe(false);
+
+    cachedSuccess("source");
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+    useTranslationStore
+      .getState()
+      .succeedRequest(refreshId, freshResult);
+    expect(
+      useTranslationStore.getState().failRefreshRequest(refreshId, "迟到"),
+    ).toBe(false);
+  });
+
+  it("stale refreshes cannot overwrite a newer request", () => {
+    cachedSuccess("source");
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    useTranslationStore.getState().startRequest("newer");
+    expect(
+      useTranslationStore.getState().succeedRequest(refreshId, freshResult),
+    ).toBe(false);
+    expect(
+      useTranslationStore.getState().failRefreshRequest(refreshId, "迟到"),
+    ).toBe(false);
+  });
+
+  it("deltas are not accepted while refreshing preserves old text", () => {
+    cachedSuccess("source");
+    const refreshId = useTranslationStore
+      .getState()
+      .startRequest("source", true);
+
+    expect(
+      useTranslationStore.getState().appendTranslationDelta(refreshId, "增量"),
+    ).toBe(false);
+    expect(useTranslationStore.getState()).toMatchObject({
+      translatedText: "缓存译文",
+      status: "refreshing",
+    });
+  });
+
+  it("clearCacheSourceNotice keeps the text but drops the cache flag", () => {
+    cachedSuccess("source");
+    useTranslationStore.getState().clearCacheSourceNotice();
+
+    expect(useTranslationStore.getState()).toMatchObject({
+      translatedText: "缓存译文",
+      status: "success",
+      fromCache: false,
     });
   });
 });

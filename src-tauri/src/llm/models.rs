@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 pub struct TranslationResult {
     #[serde(alias = "translated_text")]
     pub translated_text: String,
+    /// 是否来自本机缓存；未接入缓存时始终为 false
+    pub from_cache: bool,
 }
 
 #[cfg(test)]
@@ -21,11 +23,13 @@ mod tests {
     fn translation_result_serializes_for_frontend() {
         let result = TranslationResult {
             translated_text: "你好".to_string(),
+            from_cache: false,
         };
 
         let json = serde_json::to_string(&result).expect("result should serialize");
 
         assert!(json.contains("translatedText"));
+        assert!(json.contains("fromCache"));
         assert!(!json.contains("translated_text"));
     }
 }

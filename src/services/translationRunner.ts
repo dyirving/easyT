@@ -5,11 +5,15 @@ import {
 } from "@/stores/translationStore";
 import { toCommandError, translateText } from "@/services/tauriCommands";
 
-/** 执行已启动的请求，并统一处理增量、终态和未完成译文。 */
+/**
+ * 执行已启动的请求，并统一处理增量、终态和未完成译文。
+ * forceRefresh=true 表示"重新翻译"（与 store 的 refreshing 状态配套）。
+ */
 export async function runTranslationRequest(
   requestId: string,
   text: string,
   config: AppConfig,
+  forceRefresh = false,
 ) {
   const deltaBuffer = config.streamOutput
     ? createTranslationDeltaBuffer(requestId)
@@ -21,16 +25,24 @@ export async function runTranslationRequest(
       text,
       targetLanguage: config.targetLanguage,
       streamOutput: config.streamOutput,
+      forceRefresh,
       onContentDelta: deltaBuffer?.append,
     });
     deltaBuffer?.flush();
-    useTranslationStore
-      .getState()
-      .succeedRequest(requestId, result.translatedText);
+    useTranslationStore.getState().succeedRequest(requestId, result);
   } catch (error) {
     deltaBuffer?.flush();
     const commandError = toCommandError(error);
     const current = useTranslationStore.getState();
+    if (forceRefresh && current.status === "refreshing") {
+      // 保留旧缓存译文与来源提示，单独记录刷新失败
+      current.failRefreshRequest(
+        requestId,
+        commandError.message,
+        commandError.kind,
+      );
+      return;
+    }
     current.failRequest(
       requestId,
       commandError.message,

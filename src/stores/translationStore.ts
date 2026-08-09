@@ -1,6 +1,7 @@
 // 翻译状态管理
 import { create } from "zustand";
 import { type ErrorKind, type TranslationState } from "@/types";
+import { type TranslationResult } from "@/services/tauriCommands";
 
 interface TranslationStore extends TranslationState {
   /** 切换固定状态 */
@@ -8,12 +9,17 @@ interface TranslationStore extends TranslationState {
   setPinned: (pinned: boolean) => void;
   /** 重置为 idle */
   reset: () => void;
-  /** 开始一次新的翻译请求（生成新 requestId） */
-  startRequest: (originalText: string) => string;
+  /**
+   * 开始一次新的翻译请求（生成新 requestId）
+   * forceRefresh=true 表示"重新翻译"：
+   * - 当前为同一原文的完整缓存结果时保留译文并进入 refreshing
+   * - 否则等价普通 start，仍向后端传递 true
+   */
+  startRequest: (originalText: string, forceRefresh?: boolean) => string;
   /** 捕获故障：原子切换到无原文错误态并使旧请求失效 */
   failCapture: (message: string, kind?: ErrorKind) => void;
   /** 仅当 requestId 仍是最新请求时写入成功结果 */
-  succeedRequest: (requestId: string, translatedText: string) => boolean;
+  succeedRequest: (requestId: string, result: TranslationResult) => boolean;
   /** 仅当 requestId 仍是最新请求时追加正文增量 */
   appendTranslationDelta: (requestId: string, delta: string) => boolean;
   /** 仅当 requestId 仍是最新请求时写入错误结果 */
@@ -24,6 +30,14 @@ interface TranslationStore extends TranslationState {
     originalText?: string,
     preservePartial?: boolean,
   ) => boolean;
+  /** 重新翻译失败：仍是最新请求且处于 refreshing 时回退到旧缓存译文 */
+  failRefreshRequest: (
+    requestId: string,
+    message: string,
+    kind?: ErrorKind,
+  ) => boolean;
+  /** 清除成功：保留当前译文，只移除缓存来源提示 */
+  clearCacheSourceNotice: () => void;
   /** 判断 requestId 是否仍是最新请求 */
   isActiveRequest: (requestId: string) => boolean;
 }
@@ -39,6 +53,8 @@ const initialState: TranslationState = {
   errorMessage: null,
   errorKind: null,
   isPartial: false,
+  fromCache: false,
+  refreshErrorMessage: null,
   pinned: false,
 };
 
@@ -47,15 +63,23 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
   togglePinned: () => set({ pinned: !get().pinned }),
   setPinned: (pinned) => set({ pinned }),
   reset: () => set({ ...initialState, pinned: get().pinned }),
-  startRequest: (originalText) => {
+  startRequest: (originalText, forceRefresh = false) => {
     const requestId = createTranslationRequestId();
+    const current = get();
+    const preserveCached =
+      forceRefresh &&
+      current.status === "success" &&
+      current.fromCache &&
+      current.originalText === originalText;
     set({
       requestId,
       originalText,
-      translatedText: "",
-      status: "translating",
+      translatedText: preserveCached ? current.translatedText : "",
+      fromCache: preserveCached ? current.fromCache : false,
+      status: preserveCached ? "refreshing" : "translating",
       errorMessage: null,
       errorKind: null,
+      refreshErrorMessage: null,
       isPartial: false,
     });
     return requestId;
@@ -69,6 +93,8 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       errorMessage: message,
       errorKind: kind ?? null,
       isPartial: false,
+      fromCache: false,
+      refreshErrorMessage: null,
     });
   },
   appendTranslationDelta: (requestId, delta) => {
@@ -89,9 +115,15 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
     }));
     return true;
   },
-  succeedRequest: (requestId, translatedText) => {
+  succeedRequest: (requestId, result) => {
     if (get().requestId !== requestId) return false;
-    set({ translatedText, status: "success", isPartial: false });
+    set({
+      translatedText: result.translatedText,
+      status: "success",
+      isPartial: false,
+      fromCache: result.fromCache,
+      refreshErrorMessage: null,
+    });
     return true;
   },
   failRequest: (requestId, message, kind, originalText, preservePartial = false) => {
@@ -103,8 +135,26 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       errorMessage: message,
       errorKind: kind ?? null,
       isPartial: preservePartial && get().translatedText.length > 0,
+      fromCache: false,
+      refreshErrorMessage: null,
     });
     return true;
+  },
+  failRefreshRequest: (requestId, message, _kind) => {
+    const current = get();
+    if (current.requestId !== requestId || current.status !== "refreshing") {
+      return false;
+    }
+    set({
+      status: "success",
+      errorMessage: null,
+      errorKind: null,
+      refreshErrorMessage: message,
+    });
+    return true;
+  },
+  clearCacheSourceNotice: () => {
+    set({ fromCache: false });
   },
   isActiveRequest: (requestId) => get().requestId === requestId,
 }));

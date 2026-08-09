@@ -41,17 +41,21 @@ export async function captureSelectedText(): Promise<string> {
 /**
  * 翻译文本
  * config 由 Rust 端从 AppState 读取，前端不携带 api_key
+ * forceRefresh=true 表示"重新翻译"：绕过缓存读取，成功后覆盖共享缓存。
  */
 export interface TranslateTextRequest {
   requestId: string;
   text: string;
   targetLanguage: string;
   streamOutput: boolean;
+  forceRefresh: boolean;
   onContentDelta?: (delta: string) => void;
 }
 
 export interface TranslationResult {
   translatedText: string;
+  /** 是否来自本机缓存；未接入缓存时始终为 false */
+  fromCache: boolean;
 }
 
 interface TranslationStreamEvent {
@@ -67,6 +71,7 @@ export async function translateText(
     return invoke<TranslationResult>("translate_text", {
       text: request.text,
       targetLanguage: request.targetLanguage,
+      forceRefresh: request.forceRefresh,
     });
   }
 
@@ -84,6 +89,7 @@ export async function translateText(
     requestId: request.requestId,
     text: request.text,
     targetLanguage: request.targetLanguage,
+    forceRefresh: request.forceRefresh,
     onEvent: channel,
   });
 }

@@ -67,10 +67,9 @@ export function CacheDetailsDialog({
 
   const handleClear = async () => {
     if (clearing) return;
-    const label =
-      details.phase === "ready" && details.stats.state === "degraded"
-        ? "重建持久化缓存"
-        : "清除翻译缓存";
+    const label = clearActionLabel(
+      details.phase === "ready" ? details.stats.state : "ready",
+    );
     const confirmed = window.confirm(
       `确定${label}？\n\n这会删除本机翻译缓存，不会删除设置、Qwen 登录状态或网页对话记录。`,
     );
@@ -173,11 +172,7 @@ function CacheDetails({
       </p>
       <Button variant="outline" onClick={onClear} disabled={clearing}>
         {clearing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-        {clearing
-          ? "正在清除…"
-          : stats.state === "degraded"
-            ? "重建持久化缓存"
-            : "清除翻译缓存"}
+        {clearing ? "正在清除…" : clearActionLabel(stats.state)}
       </Button>
     </div>
   );
@@ -200,4 +195,8 @@ function statePresentation(
     case "stopped":
       return { label: "持久化缓存已停止", tone: "text-warning" };
   }
+}
+
+function clearActionLabel(state: PersistentCacheState): string {
+  return state === "degraded" ? "重建持久化缓存" : "清除翻译缓存";
 }

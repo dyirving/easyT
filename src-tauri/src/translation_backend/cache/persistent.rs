@@ -10,7 +10,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::{mpsc, oneshot};
 
 use super::entry::{
-    backend_storage_label, parse_backend_storage_label, CacheEntry, CacheOperationError,
+    backend_storage_label, now_ms, parse_backend_storage_label, CacheEntry, CacheOperationError,
     CacheStatsView, PersistentCacheState,
 };
 use super::key::{CacheKey, CACHE_KEY_VERSION};
@@ -608,6 +608,26 @@ fn worker_main(
                     let _ = reply.send(result);
                 }
                 CacheCommand::Clear { epoch, reply } => {
+                    if epoch < current_epoch {
+                        let result = connection
+                            .as_ref()
+                            .map(|connection| {
+                                read_stats_view(
+                                    connection,
+                                    state.load(),
+                                    &database_path(&data_dir),
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                Ok(unavailable_stats_view(
+                                    state.load(),
+                                    &database_path(&data_dir),
+                                ))
+                            })
+                            .map_err(|_| CacheOperationError::Unavailable);
+                        let _ = reply.send(result);
+                        continue;
+                    }
                     current_epoch = epoch;
                     pending_touches.clear();
                     pending_stats = StatsDelta::default();
@@ -666,11 +686,18 @@ fn rebuild_empty_database(data_dir: &Path) -> rusqlite::Result<Connection> {
 }
 
 fn remove_cache_database_family(data_dir: &Path) -> rusqlite::Result<()> {
-    let cache_dir = data_dir.join(CACHE_DIR_NAME);
-    std::fs::create_dir_all(&cache_dir)
+    std::fs::create_dir_all(data_dir)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-    let cache_dir = std::fs::canonicalize(cache_dir)
+    let data_dir = std::fs::canonicalize(data_dir)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let expected_cache_dir = data_dir.join(CACHE_DIR_NAME);
+    std::fs::create_dir_all(&expected_cache_dir)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let cache_dir = std::fs::canonicalize(&expected_cache_dir)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    if cache_dir != expected_cache_dir {
+        return Err(rusqlite::Error::InvalidPath(cache_dir));
+    }
 
     for file_name in [
         DATABASE_FILE_NAME.to_string(),
@@ -720,18 +747,16 @@ fn remove_validated_cache_file(cache_dir: &Path, file_name: &str) -> rusqlite::R
     if path.parent() != Some(cache_dir) {
         return Err(rusqlite::Error::InvalidPath(path));
     }
+    if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+        if metadata.file_type().is_symlink() {
+            return Err(rusqlite::Error::InvalidPath(path));
+        }
+    }
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(error))),
     }
-}
-
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis().try_into().unwrap_or(i64::MAX))
-        .unwrap_or_default()
 }
 
 fn open_connection(data_dir: &Path) -> rusqlite::Result<Connection> {
@@ -1577,6 +1602,28 @@ mod tests {
             "the timed-out lookup records one failure in the bounded queue"
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+        worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn stale_clear_cannot_move_the_worker_epoch_backwards() {
+        let dir = TestDir::new("clear-epoch");
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+
+        worker.clear(2).await.expect("newer clear should succeed");
+        let stale = worker
+            .clear(1)
+            .await
+            .expect("stale clear should be harmless");
+        assert_eq!(stale.entry_count, 0);
+
+        assert!(worker.try_store(store(7, "new epoch"), 2));
+        worker.stats().await.expect("store should drain");
+        assert!(matches!(
+            worker.lookup(CacheKey::from_seed(7), 2).await,
+            PersistentLookup::Hit(_)
+        ));
         worker.shutdown().await;
     }
 }

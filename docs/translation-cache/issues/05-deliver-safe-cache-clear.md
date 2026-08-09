@@ -27,3 +27,12 @@ Canonical design: [SDD-translation-cache.md](../../SDD-translation-cache.md)
 - [ ] 清除失败时 L1 保持为空、L2 进入 Degraded，普通翻译继续可用并显示安全错误。
 - [ ] clear/in-flight 竞态、队列旧命令、重复清除、路径验证和前端状态测试通过。
 
+## Comments
+
+- 2026-08-10 (implemented): 安全清除链路已交付。
+  - `TranslationCache::clear` 在同一 L1 锁内先清空条目并推进 epoch；持久 worker 的 Store/Touch/Lookup 均按 epoch 拒绝旧命令。Clear 使用 await/reply，完成数据库重建后才返回零条目、空命中率统计；重复 Clear 幂等。
+  - worker 先关闭唯一 SQLite Connection，再仅删除经解析和目录边界验证的 main/WAL/SHM，以及最多一组严格命名的最新隔离文件；不使用 `DELETE+VACUUM`、glob 或递归删除。删除/重建失败会使 L2 进入 Degraded，而 L1 保持已清空且后续翻译仍可用。
+  - 审查修复确保乱序旧 Clear 不会使 worker epoch 倒退；同时拒绝 `cache` junction/symlink 越界与符号链接文件删除。
+  - 新增 `clear_translation_cache` 本机主窗口 IPC；详情弹窗提供清除/重建二次确认、执行中防重复、返回统计刷新及失败安全文案。成功后由 `App` 调用既有 store 动作，仅移除当前译文的缓存来源提示，不清文本也不自动翻译。
+  - 验证：Rust 164 项、Vitest 46 项、TypeScript typecheck、前端 production build、Rust fmt 与 clippy `-D warnings` 全部通过；Standards/Spec 双轴审查发现的 epoch 与路径校验问题已修复并复审通过。
+  - 未执行真实账号 E2E 或发布级手工验收；该部分保留给 07 工单。

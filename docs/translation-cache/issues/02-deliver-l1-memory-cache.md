@@ -30,6 +30,7 @@ Canonical design: [SDD-translation-cache.md](../../SDD-translation-cache.md)
 ## Comments
 
 - 2026-08-10 (implemented): L1 完整链路已交付。版本化 BLAKE3 键、单/多行规范化、短/长双池 LRU、1 MiB 边界、Use/Refresh/Bypass、缓存来源提示与刷新失败保留均已有自动测试。
-  - 验证：Rust 143 项、Vitest 40 项、TypeScript typecheck、前端 build、Rust fmt 与 clippy `-D warnings` 全部通过。
+  - 验证：Rust 145 项、Vitest 40 项、TypeScript typecheck、前端 build、Rust fmt 与 clippy `-D warnings` 全部通过。
   - L1 跨池淘汰只比较两个分池的 LRU 尾部，保持插入路径平均 O(1)；命中来源状态从缓存门面透传，为后续 L2 `PersistentHit` 保留合同。
+  - 审查修复：锁中毒后校验并恢复 L1 不变量；`access_tick` 溢出前重编号；`Cargo.lock` 只保留 BLAKE3/LRU 必需依赖变化。
   - 未执行真实 Qwen/Official API 账号 E2E；该发布级手工验收保留到 07 工单。

@@ -5,6 +5,7 @@
 //! 跨池全局淘汰选 access_tick 最旧（平手按 key 字典序；生产中 tick 单调不会平手）。
 //! 锁中毒时接管内部状态并继续运行（缓存故障不得升级为翻译错误）。
 
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard};
 
@@ -118,17 +119,67 @@ fn lock_state(state: &Mutex<MemoryCacheState>) -> MutexGuard<'_, MemoryCacheStat
         Ok(guard) => guard,
         Err(poisoned) => {
             log::warn!("L1 内存缓存状态锁中毒，已接管状态继续运行");
-            poisoned.into_inner()
+            let mut guard = poisoned.into_inner();
+            if !state_is_valid(&guard) {
+                log::warn!("L1 内存缓存状态不变量损坏，已清空缓存并推进 epoch");
+                reset_invalid_state(&mut guard);
+            }
+            state.clear_poison();
+            guard
         }
     }
+}
+
+fn state_is_valid(state: &MemoryCacheState) -> bool {
+    if state.short_pool.len() > SHORT_MAX_ENTRIES
+        || state.long_pool.len() > LONG_MAX_ENTRIES
+        || state.short_pool.len() + state.long_pool.len() > SHORT_MAX_ENTRIES + LONG_MAX_ENTRIES
+    {
+        return false;
+    }
+
+    if state
+        .short_pool
+        .iter()
+        .any(|(key, _)| state.long_pool.contains(key))
+    {
+        return false;
+    }
+
+    let Some(short_bytes) = state.short_pool.iter().try_fold(0u64, |sum, (_, entry)| {
+        sum.checked_add(entry.logical_size_bytes)
+    }) else {
+        return false;
+    };
+    let Some(long_bytes) = state.long_pool.iter().try_fold(0u64, |sum, (_, entry)| {
+        sum.checked_add(entry.logical_size_bytes)
+    }) else {
+        return false;
+    };
+    let Some(total_bytes) = short_bytes.checked_add(long_bytes) else {
+        return false;
+    };
+
+    state.long_logical_bytes == long_bytes
+        && state.total_logical_bytes == total_bytes
+        && long_bytes <= LONG_MAX_BYTES
+        && total_bytes <= TOTAL_MAX_BYTES
+}
+
+fn reset_invalid_state(state: &mut MemoryCacheState) {
+    state.short_pool.clear();
+    state.long_pool.clear();
+    state.total_logical_bytes = 0;
+    state.long_logical_bytes = 0;
+    state.next_access_tick = 0;
+    state.epoch = state.epoch.saturating_add(1);
 }
 
 /// 命中维护：访问计数 +1、刷新访问时间、前进确定性 access_tick。
 fn touch(entry: &mut CacheEntry, state: &mut MemoryCacheState) {
     entry.hit_count = entry.hit_count.saturating_add(1);
     entry.last_accessed_at_ms = now_ms();
-    entry.access_tick = state.next_access_tick;
-    state.next_access_tick = state.next_access_tick.wrapping_add(1);
+    entry.access_tick = take_next_access_tick(state);
 }
 
 /// 锁定写入：先满足分池限制再满足全局限制（规则 §8）。
@@ -145,8 +196,7 @@ fn insert_locked(state: &mut MemoryCacheState, mut entry: CacheEntry, is_short_t
     let size = entry.logical_size_bytes;
 
     // 新条目取得唯一单调 tick（确定性淘汰排序）；覆盖后 hit_count 归零（规则 §4.3）。
-    entry.access_tick = state.next_access_tick;
-    state.next_access_tick = state.next_access_tick.wrapping_add(1);
+    entry.access_tick = take_next_access_tick(state);
 
     // 分池条数上限（768 / 256）由 LruCache 自身按 LRU 淘汰。
     let evicted = if is_short_text {
@@ -180,6 +230,39 @@ fn insert_locked(state: &mut MemoryCacheState, mut entry: CacheEntry, is_short_t
         };
         evict(state, &victim_key, victim_is_short);
     }
+}
+
+fn take_next_access_tick(state: &mut MemoryCacheState) -> u64 {
+    if state.next_access_tick == u64::MAX {
+        rebase_access_ticks(state);
+    }
+    let tick = state.next_access_tick;
+    state.next_access_tick += 1;
+    tick
+}
+
+/// 极端 tick 溢出前按既有全局年龄顺序压缩编号；不改变两个 LRU 的内部顺序。
+fn rebase_access_ticks(state: &mut MemoryCacheState) {
+    let mut by_age: Vec<(u64, CacheKey)> = state
+        .short_pool
+        .iter()
+        .chain(state.long_pool.iter())
+        .map(|(key, entry)| (entry.access_tick, *key))
+        .collect();
+    by_age.sort_unstable();
+    let ranks: BTreeMap<CacheKey, u64> = by_age
+        .into_iter()
+        .enumerate()
+        .map(|(rank, (_, key))| (key, rank as u64))
+        .collect();
+
+    for (key, entry) in state.short_pool.iter_mut() {
+        Arc::make_mut(entry).access_tick = ranks[key];
+    }
+    for (key, entry) in state.long_pool.iter_mut() {
+        Arc::make_mut(entry).access_tick = ranks[key];
+    }
+    state.next_access_tick = ranks.len() as u64;
 }
 
 fn deduct(state: &mut MemoryCacheState, bytes: u64, from_long: bool) {
@@ -390,6 +473,44 @@ mod tests {
         }));
         insert_short(&cache, entry(9, 1));
         assert!(cache.lookup(&key(9)).is_some());
+    }
+
+    #[test]
+    fn poisoned_invalid_state_is_cleared_and_advances_epoch() {
+        let cache = MemoryCache::new();
+        let old_epoch = cache.current_epoch();
+        insert_short(&cache, entry(1, 100));
+
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut state = cache.state.lock().unwrap();
+            state.total_logical_bytes = 999;
+            panic!("poison after corrupting metrics");
+        }));
+
+        assert_eq!(cache.current_epoch(), old_epoch + 1);
+        assert!(cache.lookup(&key(1)).is_none());
+        assert!(!cache.insert_if_epoch(entry(2, 1), true, old_epoch));
+    }
+
+    #[test]
+    fn access_tick_overflow_rebases_without_evicting_the_newest_entry() {
+        let cache = MemoryCache::new();
+        insert_short(&cache, entry(1, 8 * 1024 * 1024));
+        insert_short(&cache, entry(2, 1024));
+        {
+            let mut state = cache.state.lock().unwrap();
+            state.next_access_tick = u64::MAX;
+        }
+
+        assert!(cache.lookup(&key(1)).is_some(), "访问 1 号使其成为最新项");
+        insert_short(&cache, entry(3, 2 * 1024 * 1024));
+
+        assert!(
+            cache.lookup(&key(1)).is_some(),
+            "最新访问项不应因 tick 回绕被淘汰"
+        );
+        assert!(cache.lookup(&key(2)).is_none(), "较旧项应先淘汰");
+        assert!(cache.lookup(&key(3)).is_some());
     }
 
     #[test]

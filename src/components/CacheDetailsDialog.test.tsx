@@ -110,7 +110,6 @@ describe("CacheDetailsDialog", () => {
         resolveClear = resolve;
       }),
     );
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const onCacheCleared = vi.fn();
 
     render(
@@ -125,16 +124,21 @@ describe("CacheDetailsDialog", () => {
     });
     fireEvent.click(clearButton);
 
-    expect(confirm).toHaveBeenCalledWith(
-      expect.stringContaining("不会删除设置、Qwen 登录状态或网页对话记录"),
+    const confirmation = await screen.findByRole("alertdialog", {
+      name: "确认清除翻译缓存",
+    });
+    expect(confirmation).toHaveTextContent(
+      "不会删除设置、Qwen 登录状态或网页对话记录",
     );
+    expect(clearTranslationCache).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
+
     expect(clearTranslationCache).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "正在清除…" })).toBeDisabled();
 
     resolveClear({ ...readyStats, entryCount: 0, diskBytes: 0, hitRate: null });
     await waitFor(() => expect(onCacheCleared).toHaveBeenCalledOnce());
     expect(screen.getByText("0 条")).toBeInTheDocument();
-    confirm.mockRestore();
   });
 
   it("shows a safe clear failure without notifying the translation page", async () => {
@@ -142,7 +146,6 @@ describe("CacheDetailsDialog", () => {
     vi.mocked(clearTranslationCache).mockRejectedValue(
       new Error("无法清除翻译缓存"),
     );
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const onCacheCleared = vi.fn();
 
     render(
@@ -154,6 +157,9 @@ describe("CacheDetailsDialog", () => {
     );
     fireEvent.click(
       await screen.findByRole("button", { name: "清除翻译缓存" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "确认清除" }),
     );
 
     expect(await screen.findByText(/清除翻译缓存失败：无法清除翻译缓存/)).toBeInTheDocument();

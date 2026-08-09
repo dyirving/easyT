@@ -455,7 +455,11 @@ export function SettingsPage({ onBack, onCacheCleared }: SettingsPageProps) {
                 查看本机缓存的条目、磁盘占用、命中率和保存位置
               </p>
             </div>
-            <Button variant="outline" onClick={() => setCacheDetailsOpen(true)}>
+            <Button
+              variant="outline"
+              className="shrink-0 whitespace-nowrap"
+              onClick={() => setCacheDetailsOpen(true)}
+            >
               <Database className="h-4 w-4" />
               查看缓存详情
             </Button>

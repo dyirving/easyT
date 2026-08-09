@@ -27,21 +27,32 @@ export function CacheDetailsDialog({
 }: CacheDetailsDialogProps) {
   const [details, setDetails] = useState<DetailsState>({ phase: "loading" });
   const [clearing, setClearing] = useState(false);
+  const [confirming, setConfirming] = useState<PersistentCacheState | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const confirmButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (!open) return;
     const returnFocus = document.activeElement;
     closeButtonRef.current?.focus();
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key !== "Escape") return;
+      if (confirming) {
+        setConfirming(null);
+      } else {
+        onClose();
+      }
     };
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       document.removeEventListener("keydown", handleKeyDown);
       if (returnFocus instanceof HTMLElement) returnFocus.focus();
     };
-  }, [open, onClose]);
+  }, [confirming, open, onClose]);
+
+  useEffect(() => {
+    if (confirming) confirmButtonRef.current?.focus();
+  }, [confirming]);
 
   useEffect(() => {
     if (!open) return;
@@ -67,13 +78,11 @@ export function CacheDetailsDialog({
 
   const handleClear = async () => {
     if (clearing) return;
-    const label = clearActionLabel(
-      details.phase === "ready" ? details.stats.state : "ready",
-    );
-    const confirmed = window.confirm(
-      `确定${label}？\n\n这会删除本机翻译缓存，不会删除设置、Qwen 登录状态或网页对话记录。`,
-    );
-    if (!confirmed) return;
+    setConfirming(details.phase === "ready" ? details.stats.state : "ready");
+  };
+
+  const confirmClear = async () => {
+    setConfirming(null);
     setClearing(true);
     try {
       const stats = await clearTranslationCache();
@@ -132,6 +141,48 @@ export function CacheDetailsDialog({
           ) : null}
         </div>
       </section>
+      {confirming ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4 py-4">
+          <section
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="cache-clear-confirm-title"
+            aria-describedby="cache-clear-confirm-description"
+            className="max-h-[calc(100dvh-2rem)] w-full max-w-sm overflow-y-auto rounded-xl border border-line bg-surface-panel p-4 shadow-soft"
+          >
+            <h3
+              id="cache-clear-confirm-title"
+              className="text-base font-semibold text-ink"
+            >
+              确认{clearActionLabel(confirming)}
+            </h3>
+            <p
+              id="cache-clear-confirm-description"
+              className="mt-3 text-sm leading-6 text-ink-soft"
+            >
+              这会删除本机翻译缓存，不会删除设置、Qwen
+              登录状态或网页对话记录。
+            </p>
+            <div className="mt-4 flex flex-wrap justify-end gap-2">
+              <Button
+                variant="outline"
+                className="whitespace-nowrap"
+                onClick={() => setConfirming(null)}
+              >
+                取消
+              </Button>
+              <Button
+                ref={confirmButtonRef}
+                variant="danger"
+                className="whitespace-nowrap"
+                onClick={confirmClear}
+              >
+                {confirming === "degraded" ? "确认重建" : "确认清除"}
+              </Button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
 }

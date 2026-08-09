@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -49,6 +49,13 @@ const PRODUCTION_CAPACITY: CapacityLimits = CapacityLimits {
     low_entries: LOW_L2_ENTRIES,
     delete_batch: EVICTION_BATCH_SIZE,
 };
+
+struct WorkerRuntimeConfig {
+    init_delay: Duration,
+    lookup_delay: Duration,
+    touch_flush_interval: Duration,
+    capacity: CapacityLimits,
+}
 
 pub struct PersistentStore {
     pub entry: CacheEntry,
@@ -132,6 +139,13 @@ impl StatsDelta {
         }
     }
 
+    fn store_failure() -> Self {
+        Self {
+            store_failures: 1,
+            ..Self::default()
+        }
+    }
+
     fn merge(&mut self, other: Self) {
         self.l1_hits = self.l1_hits.saturating_add(other.l1_hits);
         self.l2_hits = self.l2_hits.saturating_add(other.l2_hits);
@@ -192,10 +206,41 @@ enum CacheCommand {
     },
 }
 
-/// sender 与原子状态可跨线程共享；SQLite Connection 只存在于命名 worker 闭包内。
+/// sender、原子状态与满队列失败计数可跨线程共享；SQLite Connection 只存在于命名 worker 闭包内。
 pub struct PersistentCacheWorker {
     sender: mpsc::Sender<CacheCommand>,
     state: Arc<AtomicPersistentCacheState>,
+    queue_failures: Arc<QueueFailureStats>,
+}
+
+#[derive(Default)]
+struct QueueFailureStats {
+    store_failures: AtomicU64,
+    touch_failures: AtomicU64,
+}
+
+impl QueueFailureStats {
+    fn record_store_failure(&self) {
+        saturating_increment(&self.store_failures);
+    }
+
+    fn record_touch_failure(&self) {
+        saturating_increment(&self.touch_failures);
+    }
+
+    fn take(&self) -> StatsDelta {
+        StatsDelta {
+            store_failures: self.store_failures.swap(0, Ordering::AcqRel),
+            touch_failures: self.touch_failures.swap(0, Ordering::AcqRel),
+            ..StatsDelta::default()
+        }
+    }
+}
+
+fn saturating_increment(counter: &AtomicU64) {
+    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_add(1))
+    });
 }
 
 struct AtomicPersistentCacheState(AtomicU8);
@@ -246,7 +291,9 @@ impl PersistentCacheWorker {
         let state = Arc::new(AtomicPersistentCacheState::new(
             PersistentCacheState::Starting,
         ));
+        let queue_failures = Arc::new(QueueFailureStats::default());
         let worker_state = Arc::clone(&state);
+        let worker_queue_failures = Arc::clone(&queue_failures);
         let spawn = std::thread::Builder::new()
             .name("easyT-cache-db".to_string())
             .stack_size(WORKER_STACK_BYTES)
@@ -255,17 +302,24 @@ impl PersistentCacheWorker {
                     data_dir,
                     receiver,
                     worker_state,
-                    init_delay,
-                    lookup_delay,
-                    touch_flush_interval,
-                    capacity,
+                    WorkerRuntimeConfig {
+                        init_delay,
+                        lookup_delay,
+                        touch_flush_interval,
+                        capacity,
+                    },
+                    worker_queue_failures,
                 )
             });
         if spawn.is_err() {
             log::warn!("cache_worker_state_changed: from=starting to=degraded reason=thread_spawn");
             state.store(PersistentCacheState::Degraded);
         }
-        Self { sender, state }
+        Self {
+            sender,
+            state,
+            queue_failures,
+        }
     }
 
     #[cfg(test)]
@@ -314,6 +368,7 @@ impl PersistentCacheWorker {
             state: Arc::new(AtomicPersistentCacheState::new(
                 PersistentCacheState::Degraded,
             )),
+            queue_failures: Arc::new(QueueFailureStats::default()),
         }
     }
 
@@ -347,9 +402,14 @@ impl PersistentCacheWorker {
         if self.state() != PersistentCacheState::Ready {
             return false;
         }
-        self.sender
-            .try_send(CacheCommand::Store { store, epoch })
-            .is_ok()
+        match self.sender.try_send(CacheCommand::Store { store, epoch }) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.queue_failures.record_store_failure();
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
     }
 
     pub(super) fn try_touch(&self, touch: TouchRecord, stats: StatsDelta, epoch: u64) -> bool {
@@ -369,13 +429,18 @@ impl PersistentCacheWorker {
         if self.state() != PersistentCacheState::Ready {
             return false;
         }
-        self.sender
-            .try_send(CacheCommand::Touch {
-                touch,
-                stats,
-                epoch,
-            })
-            .is_ok()
+        match self.sender.try_send(CacheCommand::Touch {
+            touch,
+            stats,
+            epoch,
+        }) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.queue_failures.record_touch_failure();
+                false
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
     }
 
     pub async fn stats(&self) -> Result<CacheStatsView, CacheOperationError> {
@@ -445,11 +510,15 @@ fn worker_main(
     data_dir: PathBuf,
     mut receiver: mpsc::Receiver<CacheCommand>,
     state: Arc<AtomicPersistentCacheState>,
-    init_delay: Duration,
-    lookup_delay: Duration,
-    touch_flush_interval: Duration,
-    capacity: CapacityLimits,
+    config: WorkerRuntimeConfig,
+    queue_failures: Arc<QueueFailureStats>,
 ) {
+    let WorkerRuntimeConfig {
+        init_delay,
+        lookup_delay,
+        touch_flush_interval,
+        capacity,
+    } = config;
     if !init_delay.is_zero() {
         std::thread::sleep(init_delay);
     }
@@ -485,6 +554,11 @@ fn worker_main(
 
     runtime.block_on(async {
         loop {
+            let queued_failures = queue_failures.take();
+            if !queued_failures.is_empty() {
+                pending_stats.merge(queued_failures);
+                pending_since.get_or_insert_with(std::time::Instant::now);
+            }
             let command = if let Some(since) = pending_since {
                 let remaining = touch_flush_interval.saturating_sub(since.elapsed());
                 match tokio::time::timeout(remaining, receiver.recv()).await {
@@ -497,9 +571,12 @@ fn worker_main(
                                 &mut pending_stats,
                             ) {
                                 pending_since = Some(std::time::Instant::now());
-                                if kind.recovers_database() {
-                                    recover_connection(&data_dir, &mut connection, &state, kind);
-                                }
+                                handle_runtime_sqlite_error(
+                                    &data_dir,
+                                    &mut connection,
+                                    &state,
+                                    kind,
+                                );
                             } else {
                                 pending_since = None;
                             }
@@ -530,9 +607,12 @@ fn worker_main(
                                 );
                                 pending_stats.merge(StatsDelta::lookup_failure());
                                 let kind = sqlite_error_kind(&error);
-                                if kind.recovers_database() {
-                                    recover_connection(&data_dir, &mut connection, &state, kind);
-                                }
+                                handle_runtime_sqlite_error(
+                                    &data_dir,
+                                    &mut connection,
+                                    &state,
+                                    kind,
+                                );
                                 PersistentLookup::Unavailable
                             }
                         }
@@ -568,18 +648,13 @@ fn worker_main(
                                         store.entry.logical_size_bytes
                                     );
                                     let kind = sqlite_error_kind(&error);
-                                    if kind.recovers_database() {
-                                        recover_connection(
-                                            &data_dir,
-                                            &mut connection,
-                                            &state,
-                                            kind,
-                                        );
-                                    }
-                                    pending_stats.merge(StatsDelta {
-                                        store_failures: 1,
-                                        ..StatsDelta::default()
-                                    });
+                                    pending_stats.merge(StatsDelta::store_failure());
+                                    handle_runtime_sqlite_error(
+                                        &data_dir,
+                                        &mut connection,
+                                        &state,
+                                        kind,
+                                    );
                                 }
                             }
                         }
@@ -606,14 +681,12 @@ fn worker_main(
                                     &mut pending_stats,
                                 ) {
                                     pending_since = Some(std::time::Instant::now());
-                                    if kind.recovers_database() {
-                                        recover_connection(
-                                            &data_dir,
-                                            &mut connection,
-                                            &state,
-                                            kind,
-                                        );
-                                    }
+                                    handle_runtime_sqlite_error(
+                                        &data_dir,
+                                        &mut connection,
+                                        &state,
+                                        kind,
+                                    );
                                 } else {
                                     pending_since = None;
                                 }
@@ -642,9 +715,12 @@ fn worker_main(
                                     sqlite_error_kind(&error).label()
                                 );
                                 let kind = sqlite_error_kind(&error);
-                                if kind.recovers_database() {
-                                    recover_connection(&data_dir, &mut connection, &state, kind);
-                                }
+                                handle_runtime_sqlite_error(
+                                    &data_dir,
+                                    &mut connection,
+                                    &state,
+                                    kind,
+                                );
                                 Err(CacheOperationError::Unavailable)
                             }
                         }
@@ -698,6 +774,7 @@ fn worker_main(
                     let _ = reply.send(result.map_err(|_| CacheOperationError::Unavailable));
                 }
                 CacheCommand::Shutdown { reply } => {
+                    pending_stats.merge(queue_failures.take());
                     if let Some(connection) = connection.as_mut() {
                         flush_pending_or_record_touch_failure(
                             connection,
@@ -781,6 +858,26 @@ fn recover_connection(
     log::warn!("cache_recovery_attempted: reason={}", reason.label());
 }
 
+fn handle_runtime_sqlite_error(
+    data_dir: &Path,
+    connection: &mut Option<Connection>,
+    state: &AtomicPersistentCacheState,
+    kind: SqliteErrorKind,
+) {
+    if kind.recovers_database() {
+        recover_connection(data_dir, connection, state, kind);
+    } else if kind.is_permanent() {
+        connection.take();
+        if state.load() != PersistentCacheState::Degraded {
+            log::warn!(
+                "cache_worker_state_changed: from=ready to=degraded reason={}",
+                kind.label()
+            );
+        }
+        state.store(PersistentCacheState::Degraded);
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum SqliteErrorKind {
     Busy,
@@ -803,6 +900,13 @@ impl SqliteErrorKind {
 
     fn recovers_on_open(self) -> bool {
         self.recovers_database() || matches!(self, Self::Other)
+    }
+
+    fn is_permanent(self) -> bool {
+        matches!(
+            self,
+            Self::Permission | Self::ReadOnly | Self::DiskFull | Self::CannotOpen | Self::Other
+        )
     }
 
     fn label(self) -> &'static str {
@@ -1381,8 +1485,9 @@ mod tests {
     use crate::translation_backend::models::{BackendMode, BackendResult, BackendSource};
 
     use super::{
-        database_path, CapacityLimits, PersistentCacheWorker, PersistentLookup, PersistentStore,
-        StatsDelta, TouchRecord, COMMAND_QUEUE_CAPACITY,
+        database_path, handle_runtime_sqlite_error, AtomicPersistentCacheState, CapacityLimits,
+        PersistentCacheWorker, PersistentLookup, PersistentStore, SqliteErrorKind, StatsDelta,
+        TouchRecord, COMMAND_QUEUE_CAPACITY,
     };
 
     fn store(seed: u32, translated_text: &str) -> PersistentStore {
@@ -1996,7 +2101,105 @@ mod tests {
             "the timed-out lookup records one failure in the bounded queue"
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+
+        worker
+            .stats()
+            .await
+            .expect("stats should drain queued stores and failure counters");
+        let connection = Connection::open(database_path(&dir.0))
+            .expect("queue failure stats database should open");
+        let store_failures: i64 = connection
+            .query_row(
+                "SELECT store_failures FROM cache_stats WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("store failure count should be readable");
+        assert_eq!(store_failures, 1);
         worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn full_bounded_queue_records_touch_failure_without_waiting() {
+        let dir = TestDir::new("touch-queue");
+        let worker = PersistentCacheWorker::start_with_test_delays(
+            dir.0.clone(),
+            Duration::ZERO,
+            Duration::from_millis(250),
+        );
+        worker.wait_until_ready().await;
+
+        let _ = worker.lookup(CacheKey::from_seed(1), 0).await;
+        let started = Instant::now();
+        let mut rejected = false;
+        for seed in 0..600 {
+            if !worker.try_touch(
+                TouchRecord {
+                    key: CacheKey::from_seed(seed),
+                    accessed_at_ms: 1_700_000_000_000,
+                    hit_delta: 1,
+                },
+                StatsDelta::default(),
+                0,
+            ) {
+                rejected = true;
+                break;
+            }
+        }
+        assert!(rejected, "the bounded queue should reject excess touches");
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        worker
+            .stats()
+            .await
+            .expect("stats should drain queued touches and failure counters");
+        let connection = Connection::open(database_path(&dir.0))
+            .expect("touch failure stats database should open");
+        let touch_failures: i64 = connection
+            .query_row(
+                "SELECT touch_failures FROM cache_stats WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("touch failure count should be readable");
+        assert_eq!(touch_failures, 1);
+        worker.shutdown().await;
+    }
+
+    #[test]
+    fn permanent_runtime_errors_transition_to_degraded_without_reconnect() {
+        let dir = TestDir::new("runtime-permanent");
+        for kind in [
+            SqliteErrorKind::Permission,
+            SqliteErrorKind::ReadOnly,
+            SqliteErrorKind::DiskFull,
+            SqliteErrorKind::CannotOpen,
+            SqliteErrorKind::Other,
+        ] {
+            let state = AtomicPersistentCacheState::new(PersistentCacheState::Ready);
+            let mut connection =
+                Some(Connection::open_in_memory().expect("in-memory database should open"));
+            handle_runtime_sqlite_error(&dir.0, &mut connection, &state, kind);
+            assert_eq!(state.load(), PersistentCacheState::Degraded);
+            assert!(connection.is_none());
+        }
+    }
+
+    #[test]
+    fn transient_runtime_errors_keep_ready_connection() {
+        let dir = TestDir::new("runtime-transient");
+        for kind in [
+            SqliteErrorKind::Busy,
+            SqliteErrorKind::Locked,
+            SqliteErrorKind::Io,
+        ] {
+            let state = AtomicPersistentCacheState::new(PersistentCacheState::Ready);
+            let mut connection =
+                Some(Connection::open_in_memory().expect("in-memory database should open"));
+            handle_runtime_sqlite_error(&dir.0, &mut connection, &state, kind);
+            assert_eq!(state.load(), PersistentCacheState::Ready);
+            assert!(connection.is_some());
+        }
     }
 
     #[tokio::test]

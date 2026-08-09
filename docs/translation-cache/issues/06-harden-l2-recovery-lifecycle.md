@@ -27,3 +27,8 @@ Canonical design: [SDD-translation-cache.md](../../SDD-translation-cache.md)
 - [x] 日志只含操作、状态、错误类别、条数和字节数，不记录原文、译文、完整键、凭证、请求或响应。
 - [x] 新缓存命令不会向远程 Qwen WebView 暴露 Tauri 权限。
 - [x] 故障注入、迁移、损坏隔离、Degraded/重建、启动和退出预算测试通过。
+
+## Comments
+
+- 2026-08-10 (`42cc000` audit): 初始化失败与 clear/rebuild 失败会进入 Degraded，但 Lookup/Store/Touch/Stats 运行期间发生 Permission、ReadOnly、DiskFull 或 CannotOpen 时，worker 只记录错误并保持 Ready；因此对应验收项重新标为未完成。按本轮用户要求仅记录，不修改代码。
+- 2026-08-10 (resolved): Lookup/Store/Touch/Stats 运行期错误统一分类处理；Permission、ReadOnly、DiskFull、CannotOpen 及其他永久错误关闭 Connection 并进入 Degraded，Busy、Locked 和临时 I/O 保持 Ready。新增永久/临时错误分类测试，Rust 全量 172 项通过。

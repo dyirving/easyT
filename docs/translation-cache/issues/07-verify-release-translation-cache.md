@@ -36,6 +36,10 @@ Canonical design: [SDD-translation-cache.md](../../SDD-translation-cache.md)
   - **Requirement coverage:** Rust 169 项测试覆盖 L1/L2、key/prompt 版本、容量、恢复、epoch、latest-wins 与流式契约；Vitest 46 项覆盖 Markdown/KaTeX 渲染、复制、缓存提示、详情弹窗、刷新和设置页。现有测试覆盖跨后端/供应商共享、目标语言隔离及 saveHistory Bypass。
   - **Verification evidence:** `npm run typecheck`、`npm test`（7 文件 / 46 tests）、`npm run build`、`cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、`cargo test --manifest-path src-tauri/Cargo.toml`（169 tests）、`cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings` 与 `cargo build --release --manifest-path src-tauri/Cargo.toml` 均退出成功。release build 仅出现 Windows linker 的既有 stdout warning，未影响退出码。
   - **Size evidence:** `target/release/easyt.exe` 为 5,697,024 B（相对本机保留的 2.0.0 release EXE 5,696,512 B，+512 B）；MSI `easyT_2.1.0_x64_en-US.msi` 为 5,292,032 B（相对 2.0.0 的 3,981,312 B，+1,310,720 B）；NSIS `easyT_2.1.0_x64-setup.exe` 为 3,615,676 B（相对 2.0.0 的 3,035,050 B，+580,626 B）。`npm run tauri build` 已生成 MSI 与 NSIS；交互工具的 120 秒窗口未收集到退出码，用户已确认产物并明确要求不再等待重复构建。
-  - **DEV-001 (approved):** SDD §3.2 原将版本号列为禁止修改；用户于 2026-08-10 明确要求版本改为 `V2.1.0`。这是唯一批准偏差，影响发布元数据与产物文件名，不影响 API、schema、安全、兼容性或缓存行为；SDD 文档控制页已将目标项目表述为 easyT 2.1.0，因此无需修改设计正文。
+  - **DEV-001 (approved):** SDD 执行协议原将版本号列为禁止修改；用户于 2026-08-10 明确要求版本改为 `V2.1.0`。这是唯一批准偏差，影响发布元数据与产物文件名，不影响 API、schema、安全、兼容性或缓存行为；SDD 0.3 已同步记录该例外。
   - **Preserved user work:** preflight 工作树干净；本次最终 diff 不含 `src-tauri/src/translation_backend/web_gateway/qwen/adapter.rs`，未覆盖用户 Adapter 修改。
   - **Remaining work:** 未提供或使用真实 Qwen/Official API 凭证，故未执行真实账号手工 E2E；需要发布负责人按 SDD §13.2 完成该项和安装包安装/启动抽查后，才能将本工单视为完全完成。
+  - **2026-08-10 follow-up (`42cc000`):** 缓存详情入口与清除确认框已改为窄屏自适应布局；应用内 `alertdialog` 保留二次确认、Escape、焦点恢复和安全文案。此次审计同步更新三份规范文档，不改变上述真实账号 E2E 待办。
+  - **2026-08-10 implementation audit:** 发现两项未完成合同：运行期永久 SQLite 错误未切换到 Degraded，Store/Touch 队列满未增加内部失败计数。SDD 0.3 已登记为 AUD-001/AUD-002；因此 FR/NFR 全覆盖及偏差闭环两项重新标为未完成。本轮按用户要求不修改代码。
+  - **Build scope note:** `81fff64` 记录的发布构建与安装包证据早于 `42cc000` 的 UI 修复。用户已明确看到产物并要求不再处理构建，本审计不重跑或撤销既有产物验收；该证据只应理解为 2.1.0 发布构建记录，不是 `42cc000` 的重新构建证明。
+  - **2026-08-10 AUD resolution:** AUD-001/AUD-002 已修复。永久 SQLite 运行期错误现在关闭唯一 Connection、切换 Degraded 且不自动重连；Store/Touch 队列满通过独立饱和原子计数后由 worker 合并持久化。新增 3 项测试，`cargo test` 172 项、Vitest 7 文件/46 项、Rust fmt check、全目标 clippy `-D warnings` 均通过。未重跑用户已豁免的构建与安装包流程。

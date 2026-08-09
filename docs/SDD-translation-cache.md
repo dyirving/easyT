@@ -4,13 +4,14 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Approved |
-| 版本 | 0.2 |
-| 最后更新 | 2026-08-09 |
+| 状态 | Approved / Implemented，自动验证完成，待人工发布验收 |
+| 版本 | 0.4 |
+| 最后更新 | 2026-08-10 |
 | 目标项目 | easyT 2.1.0/ `translation_backend`、Tauri Commands、React UI |
 | 预期实施者 | Model-neutral coding agent |
 | 需求来源 | [L1-L2需求与架构共识文档](./L1-L2需求与架构共识文档.md)、[翻译缓存规则](./翻译缓存规则.md) |
-| 基线提交 | `c5284f3`（预实施；执行前必须重新核对） |
+| 实施基线 | `c5284f3`（预实施） |
+| 实现审计 | `42cc000` 及 AUD-001/AUD-002 后续修复（easyT 2.1.0） |
 | 文档路径 | `docs/SDD-translation-cache.md` |
 
 ### 0.1 修订历史
@@ -19,8 +20,24 @@
 |---|---|---|
 | 0.1 | 2026-08-09 | 根据两份已确认需求文档生成首版完整 SDD 与执行协议 |
 | 0.2 | 2026-08-09 | 项目所有者批准 SDD，并批准拆分为七个 tracer-bullet 工单 |
+| 0.3 | 2026-08-10 | 按 `42cc000` 同步 as-built worker、缓存确认框、版本偏差和发布验证状态 |
+| 0.4 | 2026-08-10 | 修复 AUD-001/AUD-002，补充永久错误状态转换与队列满失败计数测试 |
 
-> 本文是预实施设计。状态变为 **Approved** 前，编码代理 MUST NOT 修改业务代码。只有明确的人工审查决定可以将状态改为 Approved。
+> 0.1～0.2 是预实施设计；0.3 记录 `42cc000` 的 as-built 审计结果；0.4 记录审计偏差修复。后文“编码代理执行协议”保留为历史实施合同，不表示功能仍待实现。
+
+### 0.2 实现审计摘要
+
+- **结论：**`42cc000` 审计发现的 2 项 L2 偏差已经修复，当前实现与批准产品规则一致。
+- **as-built 调整：**专用 L2 线程内部使用 current-thread Tokio runtime 和异步 `recv`，以同时满足单 Connection 所有权与定时 Touch flush；缓存清除确认使用应用内自适应 `alertdialog`，替代原设计中的 `window.confirm`。
+- **验证：**修复后 `cargo test` 172 项、当前工作树 Vitest 46 项通过，`cargo fmt --check` 与全目标 clippy `-D warnings` 通过。`81fff64` 的 typecheck、前端 build、Rust release、MSI 与 NSIS 证据作为此前 2.1.0 发布构建记录保留；按用户明确指示，不重跑构建或安装包验证。
+- **剩余事项：**未提供真实 Qwen/Official API 凭证，故账号手工 E2E 未执行；安装包安装/启动抽查仍由发布负责人完成。
+
+| 审计 ID | 批准合同 | `42cc000` 证据 | 影响与处置 |
+|---|---|---|---|
+| AUD-001 | 权限、只读、磁盘满、无法打开等永久 SQLite 错误应使 L2 进入 Degraded，本次运行不循环重连 | worker 统一通过 `handle_runtime_sqlite_error` 关闭 Connection 并切换 Degraded；Busy/Locked/临时 I/O 保持 Ready | **已修复**；永久/临时错误分类测试通过 |
+| AUD-002 | Store/Touch 队列满时应非阻塞跳过并增加内部 `store_failures`/`touch_failures` | sender 侧以独立饱和原子计数接住满队列失败，worker drain 后合并并持久化到 `cache_stats` | **已修复**；Store/Touch 满队列非阻塞及持久计数测试通过 |
+
+详细设计中的 worker 接收模型由 `blocking_recv` 调整为专用线程内 current-thread runtime + async `recv`，保持唯一线程/唯一 Connection 与不阻塞应用 Tokio core 的架构约束；本修订将其记录为 as-built 设计同步，而非删除原产品要求。
 
 ## 1. 执行摘要
 
@@ -58,8 +75,8 @@ easyT 的 Qwen WebGateway 翻译通常受网络延迟支配。本设计在 `Tran
 | ASM-001 | 已验证事实 | `TranslationBackend` 是 Official API 与 WebGateway 的统一 seam | 若入口已改变，停止并执行偏差协议 |
 | ASM-002 | 已验证事实 | latest-wins 由 `TranslationRequestManager` 管理 | 缓存不得再引入 generation |
 | ASM-003 | 已验证事实 | 数据目录由 `config::storage::app_data_dir()` 定位到可执行文件同级 `easyT_Data` | 路径策略变化属于阻塞偏差 |
-| ASM-004 | 已验证事实 | 当前命令返回 `llm::models::TranslationResult`，前端只含 `translatedText` | 必须兼容扩展 `fromCache` |
-| ASM-005 | 已验证事实 | 当前工作树已有用户修改：`src-tauri/src/translation_backend/web_gateway/qwen/adapter.rs` | 实施者必须保留，不得覆盖或格式化该文件 |
+| ASM-004 | 基线事实 | `c5284f3` 的命令返回 `llm::models::TranslationResult`，前端只含 `translatedText` | 实施时兼容扩展 `fromCache`；`42cc000` 已完成 |
+| ASM-005 | 实施期事实 | preflight 时用户曾有 `src-tauri/src/translation_backend/web_gateway/qwen/adapter.rs` 测试改动 | 已按用户要求恢复；`c5284f3..42cc000` 该文件无差异 |
 | CON-001 | 约束 | Cargo `rust-version = 1.77.2` | 新依赖必须兼容或先报告偏差 |
 | CON-002 | 约束 | L1 10 MiB，L2 256 MiB，单条 1 MiB | 不得改成配置项 |
 | CON-003 | 约束 | 所有模型和供应商共享键空间 | 来源只作元数据 |
@@ -108,9 +125,9 @@ easyT 的 Qwen WebGateway 翻译通常受网络延迟支配。本设计在 `Tran
 | NFR-010 | 构建 | release 可构建安装包；SQLite 体积增量目标约 1.01 MiB，明显偏差需报告 | before/after 二进制记录、`npm run tauri build` |
 | NFR-011 | 确定性 | 键编码与相同时间戳 LRU 淘汰必须跨运行稳定 | 固定测试向量与排序测试 |
 
-## 4. 当前系统上下文
+## 4. 实施前系统上下文（基线 `c5284f3`）
 
-以下事实已从基线仓库验证：
+以下事实是设计时从基线仓库验证的历史上下文，不是 `42cc000` 的当前能力清单：
 
 - `src-tauri/src/translation_backend/mod.rs::TranslationBackend` 持有 `OfficialApiAdapter` 与 `Arc<WebGateway>`，提供 `translate`、`translate_stream`、`test_connection`。
 - `src-tauri/src/commands/translate.rs::TranslationRequestManager` 使用 generation 与 abort handle 保证 latest-wins；两条翻译命令分别调用一次性/流式入口。
@@ -162,7 +179,7 @@ flowchart LR
 | DD-001 | L1 双 `lru::LruCache`，版本固定 0.12.5 | 最新 0.18.2 要求 Rust 1.85，与项目 MSRV 冲突 | 手写 LRU、升级 MSRV | 避免升级工具链；API 较旧但足够 |
 | DD-002 | L2 使用 `rusqlite 0.40.2`、`default-features=false`、`bundled` | 已接受约 1.01 MiB 体积，获得事务/迁移/恢复 | JSON、sled | 增加发布体积 |
 | DD-003 | BLAKE3 1.8.6 | 32 字节快速稳定键 | SHA-256 | 新增小型依赖 |
-| DD-004 | worker 使用有界 `tokio::sync::mpsc`，线程端 `blocking_recv`，reply 使用 oneshot | 普通命令可 try_send，显式命令可 await，不阻塞 Tokio core | Mutex<Connection>、std sync_channel | 需要清晰关闭生命周期 |
+| DD-004 | worker 使用有界 `tokio::sync::mpsc`；专用线程内 current-thread runtime 以异步 `recv` 驱动命令与 Touch 定时 flush，reply 使用 oneshot | 普通命令可 try_send，显式命令可 await，不阻塞应用 Tokio core，同时可靠触发定时 flush | `blocking_recv`、Mutex<Connection>、std sync_channel | 专用线程仍独占唯一 Connection，需清晰关闭生命周期 |
 | DD-005 | TranslationBackend 返回 `TranslationOutcome` | 来源状态与统一结果同行，Adapter 不变 | Command 自行查缓存 | 保持 seam 深度 |
 | DD-006 | Store 中保存统一 BackendResult，键不含来源 | 跨模型共享且可展示来源元数据 | 分模型键 | 用户需用 Refresh 获取当前模型 |
 | DD-007 | 前端增加显式 refreshing 状态 | 能保留旧缓存结果并显示 Refresh 失败 | 复用 translating + 隐藏译文 | 状态机增加一个状态 |
@@ -299,7 +316,7 @@ pub async fn shutdown(&self);
 
 - 使用 `std::thread::Builder::new().name("easyT-cache-db").stack_size(512 * 1024)`。
 - Connection 只在线程闭包内创建和销毁。
-- `tokio::sync::mpsc::channel(512)`；worker 使用 `blocking_recv`；reply 使用 oneshot。
+- `tokio::sync::mpsc::channel(512)`；专用线程创建 current-thread Tokio runtime，以异步 `receiver.recv()` 配合定时预算驱动命令和 30 秒 Touch flush；reply 使用 oneshot。
 - Lookup 成功 try_send 后，调用侧使用 `tokio::time::timeout(Duration::from_millis(50), reply)`。
 - Store/Touch 队列满时更新进程内失败统计，不等待。
 - Clear/Stats/Shutdown 通过 await send；Tauri async command 不做同步阻塞。
@@ -512,7 +529,8 @@ interface CacheDetailsDialogProps {
 - 打开时调用 stats；loading/error/ready/degraded 均有状态。
 - 显示 L2 entryCount、main+wal+shm diskBytes/256 MiB、hitRate、绝对路径、本机明文译文提示。
 - hitRate null 显示“—”。
-- 清除前 `window.confirm`；文案说明不删除设置、Qwen 登录或网页历史。
+- 清除前显示应用内 `role="alertdialog"` 确认层；文案说明不删除设置、Qwen 登录或网页历史。
+- 确认层必须自适应窄屏：`width` 受视口约束、最大高度不超过可视区、内容超高可纵向滚动、操作按钮允许换行且文字保持可读比例。
 - 清除期间禁用关闭以外的重复提交，按钮显示 loading。
 - ready 按钮“清除翻译缓存”；degraded 按钮“重建持久化缓存”。
 - 成功用返回 stats 立即刷新并通知 TranslationPage 清除来源提示。
@@ -689,7 +707,7 @@ sequenceDiagram
 - Touch 合并 30 秒/256 key，Store write-behind。
 - L2 Lookup 50 ms；worker 队列 512；SQLite page cache约2 MiB。
 - L2 淘汰最多 500/批，避免长事务；循环达到双低水位。
-- 测量 release exe 与安装包变化，异常增长（明显高于已接受约 1.01 MiB SQLite 增量）必须报告，不自动换引擎。
+- 测量 release exe 与安装包变化，异常增长必须报告，不自动换引擎。2.1.0 验收记录为：EXE 5,697,024 B（相对本机保留的 2.0.0 产物 +512 B）、MSI 5,292,032 B（+1,310,720 B）、NSIS 3,615,676 B（+580,626 B）；安装包差异会受打包与压缩影响，不应把任一单值解释为 SQLite 的纯增量。
 
 ### 10.4 可访问性与国际化
 
@@ -878,16 +896,18 @@ npm run tauri build
 
 ### 15.2 开放问题
 
-当前无阻塞产品问题；两份需求文档中的选择均已由用户确认。实施 preflight 必须重新验证：
+当前无待决产品选择。实施 preflight 的四项开放检查均已关闭：
 
-- 依赖解析是否满足实际 Rust 工具链/MSRV。
-- 当前工作树及用户对 Qwen adapter 的未提交修改是否仍存在。
-- Tauri capability 是否会把新命令暴露给远程 Qwen WebView。
-- 托盘回调中实现 1 秒异步 shutdown 的最小安全方式。
+- `blake3 1.8.6`、`lru 0.12.5`、`rusqlite 0.40.2` 已在 MSRV 1.77.2 合同下解析、构建并通过测试。
+- 用户早期的 Qwen adapter 测试改动已按要求恢复；`c5284f3..42cc000` 的 adapter 无差异。
+- 新缓存命令只由本地主窗口使用，未扩大远程 Qwen WebView capability。
+- 托盘退出通过现有 Tauri runtime 桥接 shutdown；worker 内部预算最多 1 秒并有生命周期测试。
 
-其中任何一项导致公共合同、安全边界或 MSRV 改变时必须停止，不得按默认偏好处理。
+AUD-001/AUD-002 已关闭。发布验收仍待真实 Qwen/Official API 凭证 E2E 与安装包安装/启动抽查。
 
 ## 16. 编码代理执行约束
+
+本节记录实施期约束，供后续回归和审计参考；`42cc000` 已完成本轮编码阶段。
 
 - 遵守根 `AGENTS.md`、`CONTEXT.md` 和 `docs/agents/*.md`。
 - 不进行无关重构、依赖升级、格式化或模型列表改动。
@@ -908,6 +928,8 @@ npm run tauri build
 ---
 
 # Coding Agent Execution Protocol
+
+> 本协议是 0.1～0.2 的实施合同，0.3 保留其原文用于追溯。后续维护若改变接口、schema、容量或安全边界，仍须按第 17 节同步设计；普通审计不应把下述 preflight 步骤误读为当前未完成事项。
 
 ## 1. 执行目标
 
@@ -954,8 +976,8 @@ npm run tauri build
 - Official API/Qwen request、header、SSE 协议和登录凭证逻辑。
 - `src-tauri/src/config/models.rs` 的 AppConfig schema。
 - `src-tauri/src/commands/selection.rs`、`shortcut.rs`。
-- logo、icons、安装包标识和版本号。
-- `package.json`、`package-lock.json`（不新增前端依赖）。
+- logo、icons 和安装包标识。版本号原属禁止范围，但项目所有者已批准 DEV-001，将根版本统一为 2.1.0。
+- `package.json`、`package-lock.json` 原则上不因缓存功能或前端依赖修改；DEV-001 仅批准同步 2.1.0 版本及 lockfile 根元数据，未新增前端依赖。
 - 与缓存无关的 docs、测试快照和格式化。
 
 ### 3.3 允许的支持性变更

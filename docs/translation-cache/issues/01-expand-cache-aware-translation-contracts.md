@@ -1,6 +1,6 @@
 # 01 — 扩展缓存感知翻译合同
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Source
 
@@ -16,14 +16,14 @@ None — can start immediately.
 
 ## Acceptance criteria
 
-- [ ] 普通快捷键和手动输入明确传递普通翻译意图，右上角重新翻译与错误态重试明确传递强制刷新意图。
-- [ ] 一次性输出和流式输出使用相同的强制刷新与缓存来源合同。
-- [ ] TranslationBackend 返回统一 outcome，供应商 Adapter 的 BackendResult 合同保持不变。
-- [ ] Tauri 返回结果新增缓存来源布尔值；未接入缓存时始终为 false。
-- [ ] 前端状态能够表达 refreshing，并继续使用 requestId 阻止旧翻译请求覆盖新界面。
-- [ ] 当前翻译、流式输出、latest-wins、复制和错误展示行为保持不变。
-- [ ] 不修改 Qwen/Official API 私有协议、登录逻辑或应用配置 schema。
-- [ ] 合同与状态机的 Rust、TypeScript 单元测试通过，完整现有测试保持绿色。
+- [x] 普通快捷键和手动输入明确传递普通翻译意图，右上角重新翻译与错误态重试明确传递强制刷新意图。
+- [x] 一次性输出和流式输出使用相同的强制刷新与缓存来源合同。
+- [x] TranslationBackend 返回统一 outcome，供应商 Adapter 的 BackendResult 合同保持不变。
+- [x] Tauri 返回结果新增缓存来源布尔值；未接入缓存时始终为 false。
+- [x] 前端状态能够表达 refreshing，并继续使用 requestId 阻止旧翻译请求覆盖新界面。
+- [x] 当前翻译、流式输出、latest-wins、复制和错误展示行为保持不变。
+- [x] 不修改 Qwen/Official API 私有协议、登录逻辑或应用配置 schema。
+- [x] 合同与状态机的 Rust、TypeScript 单元测试通过，完整现有测试保持绿色。
 
 ## Comments
 
@@ -33,4 +33,3 @@ None — can start immediately.
   - `failRefreshRequest` 的 `kind` 参数按 SDD 6.10 签名保留；SDD 6.9/6.11 未定义 refreshErrorKind 存储字段，故仅用于未来提示路由。
   - `clearCacheSourceNotice` 暂无 UI 调用方，随设置页清除入口（后期工单）接入。
   - 本次未接入实际缓存：`fromCache` 恒为 false，`refresh` 状态在真实运行中不会触发（仅供测试与后续切片）。
-

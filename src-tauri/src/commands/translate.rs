@@ -196,7 +196,7 @@ pub async fn translate_text_stream(
     Ok(result)
 }
 
-/// 把统一 outcome 映射为前端命令结果；fromCache 在未接入缓存前始终为 false。
+/// 把统一 outcome 映射为前端命令结果；只有 L1/L2 命中时 fromCache 为 true。
 fn translate_outcome_to_result(
     outcome: crate::translation_backend::TranslationOutcome,
 ) -> crate::llm::models::TranslationResult {
@@ -346,8 +346,8 @@ mod tests {
 
     #[test]
     fn outcome_maps_to_frontend_result_with_from_cache() {
-        use crate::translation_backend::models::{BackendResult, BackendSource, CacheStatus};
-        use crate::translation_backend::{BackendMode, TranslationOutcome};
+        use crate::translation_backend::models::{BackendResult, BackendSource};
+        use crate::translation_backend::{BackendMode, CacheStatus, TranslationOutcome};
 
         let outcome = TranslationOutcome {
             result: BackendResult {

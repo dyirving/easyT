@@ -2,6 +2,10 @@
 //!
 //! 纯逻辑模块：不持有状态，不读取配置，不发请求。
 
+/// Prompt 版本：内容或格式要求变化时必须手动提升，
+/// 使既有缓存键（含 prompt_version）自然失效（《翻译缓存规则》§5.3）。
+pub const PROMPT_VERSION: u32 = 1;
+
 /// 根据目标语言动态拼装系统提示词
 /// 与初始 prompt 文档中第 5 节保持一致
 pub fn build_system_prompt(target_language: &str) -> String {

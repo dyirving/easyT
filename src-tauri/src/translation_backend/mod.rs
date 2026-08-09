@@ -3,8 +3,8 @@
 //! TranslationBackend 是翻译能力唯一的外部 seam：
 //! - 根据 AppConfig.backend_mode 路由到 OfficialApiAdapter 或 WebGateway
 //! - 在进入 Adapter 前执行共同输入校验
-//! - 返回统一 BackendResult
-//! - 将 Adapter 的错误统一为 BackendError
+//! - 编排缓存策略 Use/Refresh/Bypass（缓存深模块不知道 Adapter/HTTP/Tauri）
+//! - 返回统一 BackendResult 与来源状态 TranslationOutcome
 //!
 //! 它不负责：
 //! - latest-wins generation（继续由 TranslationRequestManager 唯一负责）
@@ -13,23 +13,29 @@
 //! - Qwen Header、请求体、SSE 字段
 //! - 前端状态更新
 
+pub mod cache;
 pub mod error;
 pub mod models;
 pub mod official_api;
 pub mod prompt;
 pub mod web_gateway;
 
+pub use cache::entry::{CachePolicy, CacheStatus, TranslationOutcome};
 pub use error::BackendError;
 pub use models::{
-    BackendMode, BackendRequest, BackendResult, TranslationOptions, TranslationOutcome,
-    TranslationProgress,
+    BackendMode, BackendRequest, BackendResult, TranslationOptions, TranslationProgress,
 };
 
+use std::future::Future;
 use std::sync::Arc;
+
+use futures_util::FutureExt;
 
 use crate::config::AppConfig;
 
-use self::models::CacheStatus;
+use self::cache::{
+    is_definitely_oversized, prepare_cache_input, NormalizedCacheInput, TranslationCache,
+};
 use self::official_api::OfficialApiAdapter;
 use self::web_gateway::WebGateway;
 
@@ -65,15 +71,17 @@ impl TranslationProgress for DiscardProgress {
 pub struct TranslationBackend {
     official_api: OfficialApiAdapter,
     web_gateway: Arc<WebGateway>,
+    cache: Arc<TranslationCache>,
 }
 
 impl TranslationBackend {
-    pub fn new(http_client: reqwest::Client) -> Self {
+    pub fn new(http_client: reqwest::Client, cache: Arc<TranslationCache>) -> Self {
         let official_api = OfficialApiAdapter::new(http_client.clone());
         let web_gateway = Arc::new(WebGateway::new(http_client));
         Self {
             official_api,
             web_gateway,
+            cache,
         }
     }
 
@@ -84,12 +92,8 @@ impl TranslationBackend {
 
     /// 翻译入口
     ///
-    /// 根据 `config.backend_mode` 路由：
-    /// - OfficialApi：调用 OfficialApiAdapter，沿用现有 OpenAI 兼容协议
-    /// - WebGateway：调用 WebGateway，按 provider 转发到具体 QwenWebAdapter
-    ///
-    /// 共同输入校验在此完成；Adapter 内部只校验与自己协议相关的字段。
-    /// options.force_refresh 决定缓存策略（Use/Refresh），策略结果随 outcome 返回。
+    /// 输入校验 → 策略（Use/Refresh/Bypass）→ L1 命中即返 / miss 走 Adapter。
+    /// 成功后只有可缓存结果写入；缓存错误不得改变翻译结果语义。
     pub async fn translate(
         &self,
         config: &AppConfig,
@@ -98,15 +102,16 @@ impl TranslationBackend {
     ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
         let policy = resolve_cache_policy(config, options);
-
-        let result = match config.backend_mode {
-            BackendMode::OfficialApi => self.official_api.translate(config, request).await,
-            BackendMode::WebGateway => self.web_gateway.translate(config, request).await,
+        let input = prepare_cache_input(&request.text, &request.target_language);
+        let fetch = match config.backend_mode {
+            BackendMode::OfficialApi => self.official_api.translate(config, request).boxed(),
+            BackendMode::WebGateway => self.web_gateway.translate(config, request).boxed(),
         };
-        Ok(outcome_for(result?, policy))
+        run_translation_with_cache(&self.cache, &input, policy, fetch).await
     }
 
     /// 流式翻译入口：只向 progress 报告可见正文，完成后仍返回完整结果。
+    /// 流式取消/部分结果不会到达 `store`（future 被 abort）。
     pub async fn translate_stream(
         &self,
         config: &AppConfig,
@@ -116,20 +121,18 @@ impl TranslationBackend {
     ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
         let policy = resolve_cache_policy(config, options);
-
-        let result = match config.backend_mode {
-            BackendMode::OfficialApi => {
-                self.official_api
-                    .translate_stream(config, request, progress)
-                    .await
-            }
-            BackendMode::WebGateway => {
-                self.web_gateway
-                    .translate_stream(config, request, progress)
-                    .await
-            }
+        let input = prepare_cache_input(&request.text, &request.target_language);
+        let fetch = match config.backend_mode {
+            BackendMode::OfficialApi => self
+                .official_api
+                .translate_stream(config, request, progress)
+                .boxed(),
+            BackendMode::WebGateway => self
+                .web_gateway
+                .translate_stream(config, request, progress)
+                .boxed(),
         };
-        Ok(outcome_for(result?, policy))
+        run_translation_with_cache(&self.cache, &input, policy, fetch).await
     }
 
     /// 测试连接：必须通过当前 Adapter 进行真实轻量请求
@@ -186,8 +189,8 @@ fn validate_test_connection(config: &AppConfig) -> Result<(), BackendError> {
     Ok(())
 }
 
-/// 缓存策略：唯一决策点。缓存模块接入后，Use 分支在此执行查找/回填。
-/// - WebGateway 且保存网页历史：Bypass（测试连接/诊断/saveHistory 同样绕过）
+/// 缓存策略：唯一决策点（规则文档 §2）。
+/// - WebGateway 且保存网页历史：Bypass（测试连接/诊断同样绕行）
 /// - 用户显式重新翻译：Refresh
 /// - 其余：Use
 fn resolve_cache_policy(config: &AppConfig, options: TranslationOptions) -> CachePolicy {
@@ -200,33 +203,153 @@ fn resolve_cache_policy(config: &AppConfig, options: TranslationOptions) -> Cach
     }
 }
 
-/// 未接入实际缓存：Use 视为 miss，Refresh/Bypass 报告对应来源状态，fromCache 均为 false。
-fn outcome_for(result: BackendResult, policy: CachePolicy) -> TranslationOutcome {
-    let cache_status = match policy {
-        CachePolicy::Use => CacheStatus::Miss,
-        CachePolicy::Refresh => CacheStatus::Refreshed,
-        CachePolicy::Bypass => CacheStatus::Bypassed,
-    };
-    TranslationOutcome {
-        result,
-        cache_status,
+/// 缓存感知的翻译编排：Use 命中即返；Refresh 绕过读取成功后覆盖；
+/// Bypass 不读不写。epoch 在请求开始时快照，迟到写入被 L1 拒绝。
+async fn run_translation_with_cache<F>(
+    cache: &TranslationCache,
+    input: &NormalizedCacheInput,
+    policy: CachePolicy,
+    fetch: F,
+) -> Result<TranslationOutcome, BackendError>
+where
+    F: Future<Output = Result<BackendResult, BackendError>>,
+{
+    let epoch = cache.current_epoch();
+    match policy {
+        CachePolicy::Use => {
+            if !is_definitely_oversized(input) {
+                let outcome = cache.lookup(input).await;
+                if let Some(result) = outcome.result {
+                    return Ok(TranslationOutcome {
+                        result: (*result).clone(),
+                        cache_status: outcome.status,
+                    });
+                }
+            }
+            let result = fetch.await?;
+            if is_cacheable_result(&result) {
+                cache.store(input, &result, epoch);
+            }
+            Ok(TranslationOutcome {
+                result,
+                cache_status: CacheStatus::Miss,
+            })
+        }
+        CachePolicy::Refresh => {
+            let result = fetch.await?;
+            if is_cacheable_result(&result) {
+                cache.store(input, &result, epoch);
+            }
+            Ok(TranslationOutcome {
+                result,
+                cache_status: CacheStatus::Refreshed,
+            })
+        }
+        CachePolicy::Bypass => {
+            let result = fetch.await?;
+            Ok(TranslationOutcome {
+                result,
+                cache_status: CacheStatus::Bypassed,
+            })
+        }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CachePolicy {
-    Use,
-    Refresh,
-    Bypass,
+/// 只有完整成功且非空的译文才可缓存；取消/部分/失败根本走不到 store（future 被 abort）。
+fn is_cacheable_result(result: &BackendResult) -> bool {
+    !result.translated_text.trim().is_empty()
 }
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
-    use crate::translation_backend::models::BackendSource;
+    use crate::translation_backend::cache::{prepare_cache_input, TranslationCache};
+
+    fn sample_result(text: &str) -> BackendResult {
+        BackendResult {
+            translated_text: text.to_string(),
+            source: models::BackendSource {
+                backend: BackendMode::OfficialApi,
+                provider: "agnes".to_string(),
+                model: "agnes-2.0-flash".to_string(),
+            },
+        }
+    }
+
+    /// 计数 fetch：每次轮询恰好产出一次结果，模拟 Adapter 的一次真实调用。
+    fn counting_fetch(
+        calls: Arc<AtomicUsize>,
+        result: BackendResult,
+    ) -> impl Future<Output = Result<BackendResult, BackendError>> {
+        let calls = Arc::clone(&calls);
+        async move {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(result)
+        }
+    }
+
+    fn run_use(
+        cache: &TranslationCache,
+        input: &NormalizedCacheInput,
+        text: &str,
+        calls: Arc<AtomicUsize>,
+    ) -> TranslationOutcome {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        runtime
+            .block_on(run_translation_with_cache(
+                cache,
+                input,
+                CachePolicy::Use,
+                counting_fetch(calls, sample_result(text)),
+            ))
+            .expect("use should succeed")
+    }
+
+    fn run_refresh(
+        cache: &TranslationCache,
+        input: &NormalizedCacheInput,
+        text: &str,
+        calls: Arc<AtomicUsize>,
+    ) -> TranslationOutcome {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        runtime
+            .block_on(run_translation_with_cache(
+                cache,
+                input,
+                CachePolicy::Refresh,
+                counting_fetch(calls, sample_result(text)),
+            ))
+            .expect("refresh should succeed")
+    }
+
+    fn run_bypass(
+        cache: &TranslationCache,
+        input: &NormalizedCacheInput,
+        text: &str,
+        calls: Arc<AtomicUsize>,
+    ) -> TranslationOutcome {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        runtime
+            .block_on(run_translation_with_cache(
+                cache,
+                input,
+                CachePolicy::Bypass,
+                counting_fetch(calls, sample_result(text)),
+            ))
+            .expect("bypass should succeed")
+    }
 
     #[test]
-    fn validate_translate_rejects_empty_text() {
+    fn validate_rejects_empty_text() {
         let mut config = crate::config::default_config();
         config.max_text_length = 100;
         let request = BackendRequest {
@@ -319,26 +442,170 @@ mod tests {
     }
 
     #[test]
-    fn outcome_reports_non_cache_status_without_cache() {
-        let result = BackendResult {
-            translated_text: "你好".to_string(),
-            source: BackendSource {
-                backend: BackendMode::OfficialApi,
-                provider: "agnes".to_string(),
-                model: "agnes-2.0-flash".to_string(),
-            },
+    fn use_policy_miss_fetches_stores_then_hits_without_network() {
+        let cache = TranslationCache::start();
+        let input = prepare_cache_input("hello", "简体中文");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let first = run_use(&cache, &input, "你好", Arc::clone(&calls));
+        assert_eq!(first.cache_status, CacheStatus::Miss);
+        assert_eq!(first.result.translated_text, "你好");
+
+        let second = run_use(&cache, &input, "不应再走网络", Arc::clone(&calls));
+        assert_eq!(second.cache_status, CacheStatus::MemoryHit);
+        assert_eq!(second.result.translated_text, "你好");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "第二次不发起网络请求");
+    }
+
+    #[test]
+    fn use_hit_returns_same_content_regardless_of_fetch() {
+        let cache = TranslationCache::start();
+        let input = parse_input("hello", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+        run_use(&cache, &input, "A", Arc::clone(&calls));
+        // 即使当前 fetch 会返回别的译文，命中路径也不调用它
+        let hit = run_use(&cache, &input, "B", Arc::clone(&calls));
+        assert_eq!(hit.cache_status, CacheStatus::MemoryHit);
+        assert_eq!(hit.result.translated_text, "A");
+    }
+
+    #[test]
+    fn definitely_oversized_use_skips_cache_lookup() {
+        let cache = TranslationCache::start();
+        let small = parse_input("hello", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+        run_use(&cache, &small, "cached", Arc::clone(&calls));
+
+        let oversized_same_key = NormalizedCacheInput {
+            key: small.key,
+            normalized_source_bytes: crate::translation_backend::cache::key::MAX_ENTRY_LOGICAL_BYTES
+                as usize,
+            target_language: small.target_language.clone(),
+            is_short_text: false,
         };
+        let outcome = run_use(&cache, &oversized_same_key, "network", Arc::clone(&calls));
+
+        assert_eq!(outcome.cache_status, CacheStatus::Miss);
+        assert_eq!(outcome.result.translated_text, "network");
         assert_eq!(
-            outcome_for(result.clone(), CachePolicy::Use).cache_status,
-            CacheStatus::Miss
+            calls.load(Ordering::SeqCst),
+            2,
+            "oversized Use must not read L1"
         );
+    }
+
+    #[test]
+    fn refresh_skips_read_and_overwrites_shared_entry() {
+        let cache = TranslationCache::start();
+        let input = parse_input("hello", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        run_use(&cache, &input, "old", Arc::clone(&calls));
+        let refreshed = run_refresh(&cache, &input, "new", Arc::clone(&calls));
+        assert_eq!(refreshed.cache_status, CacheStatus::Refreshed);
+        assert_eq!(refreshed.result.translated_text, "new");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "Refresh 强制走网络");
+
+        let hit = run_use(&cache, &input, "ignored", Arc::clone(&calls));
+        assert_eq!(hit.cache_status, CacheStatus::MemoryHit);
+        assert_eq!(hit.result.translated_text, "new");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "覆盖后的新值命中");
+    }
+
+    #[test]
+    fn bypass_never_reads_or_writes() {
+        let cache = TranslationCache::start();
+        let input = parse_input("hello", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        run_use(&cache, &input, "old", Arc::clone(&calls));
+        let bypassed = run_bypass(&cache, &input, "proxy", Arc::clone(&calls));
+        assert_eq!(bypassed.cache_status, CacheStatus::Bypassed);
+        assert_eq!(bypassed.result.translated_text, "proxy");
+
+        let hit = run_use(&cache, &input, "ignored", Arc::clone(&calls));
+        assert_eq!(hit.cache_status, CacheStatus::MemoryHit);
+        assert_eq!(hit.result.translated_text, "old", "Bypass 不读写缓存");
         assert_eq!(
-            outcome_for(result.clone(), CachePolicy::Refresh).cache_status,
-            CacheStatus::Refreshed
+            calls.load(Ordering::SeqCst),
+            2,
+            "Use 与 Bypass 各一次网络请求"
         );
-        assert_eq!(
-            outcome_for(result, CachePolicy::Bypass).cache_status,
-            CacheStatus::Bypassed
+    }
+
+    #[test]
+    fn empty_result_never_stored() {
+        let cache = TranslationCache::start();
+        let input = parse_input("abc", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        let calls_for_fetch = Arc::clone(&calls);
+        let _ = runtime.block_on(run_translation_with_cache(
+            &cache,
+            &input,
+            CachePolicy::Use,
+            async move {
+                calls_for_fetch.fetch_add(1, Ordering::SeqCst);
+                Ok(sample_result(""))
+            },
+        ));
+
+        let again = run_use(&cache, &input, "filled", Arc::clone(&calls));
+        assert_eq!(again.cache_status, CacheStatus::Miss, "空译文不缓存");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fetch_error_propagates_and_nothing_is_stored() {
+        let cache = TranslationCache::start();
+        let input = parse_input("abc", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("runtime should build");
+        let calls_for_fetch = Arc::clone(&calls);
+        let err_outcome = runtime.block_on(run_translation_with_cache(
+            &cache,
+            &input,
+            CachePolicy::Use,
+            async move {
+                calls_for_fetch.fetch_add(1, Ordering::SeqCst);
+                Err(BackendError::Network("模拟网络错误".to_string()))
+            },
+        ));
+        assert!(matches!(err_outcome, Err(BackendError::Network(_))));
+
+        let second = run_use(&cache, &input, "ok", Arc::clone(&calls));
+        assert_eq!(second.cache_status, CacheStatus::Miss, "失败结果不缓存");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn different_target_language_misses() {
+        let cache = TranslationCache::start();
+        let zh = parse_input("hello", "zh");
+        let en = parse_input("hello", "en");
+        let calls = Arc::new(AtomicUsize::new(0));
+        run_use(&cache, &zh, "你好", Arc::clone(&calls));
+        let second = run_use(&cache, &en, "Hello", Arc::clone(&calls));
+        assert_eq!(second.cache_status, CacheStatus::Miss);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    fn parse_input(text: &str, target: &str) -> NormalizedCacheInput {
+        prepare_cache_input(text, target)
+    }
+
+    #[test]
+    fn output_options_participate_in_key_via_cache_key_version() {
+        // 目标语言参与键的对外承诺：不同目标语言共享相同原文为不同条目
+        assert_ne!(
+            parse_input("hello", "zh").key,
+            parse_input("hello", "en").key
         );
     }
 }

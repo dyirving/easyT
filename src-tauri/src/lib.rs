@@ -29,7 +29,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
-use translation_backend::TranslationBackend;
+use translation_backend::{cache::TranslationCache, TranslationBackend};
 
 /// 托盘菜单事件
 const TRAY_EVENT_SHOW: &str = "tray://show";
@@ -91,10 +91,13 @@ pub fn run() {
 
             // 初始化 TranslationBackend 并恢复 Qwen 登录态
             let http_client = reqwest::Client::new();
-            let backend = TranslationBackend::new(http_client);
+            // L1 缓存立即可用；缓存始终启用（规则文档），L2 持久化由后续工单挂接
+            let cache = TranslationCache::start();
+            let backend = TranslationBackend::new(http_client, Arc::clone(&cache));
             // 启动时只检查 credentials.bin 是否存在且格式有效，不创建登录 WebView
             let qwen_session = backend.web_gateway().qwen_session();
             qwen_session.restore_from_storage(&data_dir);
+            app.manage(cache);
             app.manage(Arc::new(backend));
 
             window_state::restore_main_window_size(app.handle());

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct TranslationResult {
     #[serde(alias = "translated_text")]
     pub translated_text: String,
-    /// 是否来自本机缓存；未接入缓存时始终为 false
+    /// 是否来自本机缓存
     pub from_cache: bool,
 }
 

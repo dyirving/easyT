@@ -19,6 +19,7 @@ use crate::translation_backend::prompt::PROMPT_VERSION;
 
 const CACHE_DIR_NAME: &str = "cache";
 const DATABASE_FILE_NAME: &str = "translation_cache.sqlite3";
+const DATABASE_FAMILY_SUFFIXES: [&str; 3] = ["", "-wal", "-shm"];
 const COMMAND_QUEUE_CAPACITY: usize = 512;
 const WORKER_STACK_BYTES: usize = 512 * 1024;
 const LOOKUP_BUDGET: Duration = Duration::from_millis(50);
@@ -260,8 +261,8 @@ impl PersistentCacheWorker {
                     capacity,
                 )
             });
-        if let Err(error) = spawn {
-            log::warn!("L2 cache worker failed to start: kind=thread_spawn error={error}");
+        if spawn.is_err() {
+            log::warn!("cache_worker_state_changed: from=starting to=degraded reason=thread_spawn");
             state.store(PersistentCacheState::Degraded);
         }
         Self { sender, state }
@@ -457,20 +458,21 @@ fn worker_main(
         .build()
     {
         Ok(runtime) => runtime,
-        Err(error) => {
-            log::warn!("cache_worker_state_changed: from=starting to=degraded reason=runtime error={error}");
+        Err(_) => {
+            log::warn!("cache_worker_state_changed: from=starting to=degraded reason=runtime");
             state.store(PersistentCacheState::Degraded);
             return;
         }
     };
-    let mut connection = match open_connection(&data_dir) {
+    let mut connection = match open_connection_with_recovery(&data_dir) {
         Ok(connection) => {
             state.store(PersistentCacheState::Ready);
             Some(connection)
         }
         Err(error) => {
             log::warn!(
-                "cache_worker_state_changed: from=starting to=degraded reason=init error={error}"
+                "cache_worker_state_changed: from=starting to=degraded reason={}",
+                sqlite_error_kind(&error).label()
             );
             state.store(PersistentCacheState::Degraded);
             None
@@ -488,13 +490,16 @@ fn worker_main(
                 match tokio::time::timeout(remaining, receiver.recv()).await {
                     Ok(command) => command,
                     Err(_) => {
-                        if let Some(connection) = connection.as_mut() {
-                            if !flush_pending_or_record_touch_failure(
-                                connection,
+                        if let Some(active_connection) = connection.as_mut() {
+                            if let Some(kind) = flush_pending_or_record_touch_failure(
+                                active_connection,
                                 &mut pending_touches,
                                 &mut pending_stats,
                             ) {
                                 pending_since = Some(std::time::Instant::now());
+                                if kind.recovers_database() {
+                                    recover_connection(&data_dir, &mut connection, &state, kind);
+                                }
                             } else {
                                 pending_since = None;
                             }
@@ -515,12 +520,19 @@ fn worker_main(
                     }
                     let result = if epoch != current_epoch {
                         PersistentLookup::Unavailable
-                    } else if let Some(connection) = connection.as_ref() {
-                        match lookup_entry(connection, key) {
+                    } else if let Some(active_connection) = connection.as_ref() {
+                        match lookup_entry(active_connection, key) {
                             Ok(result) => result,
                             Err(error) => {
-                                log::warn!("cache_lookup_failed: reason=sqlite error={error}");
+                                log::warn!(
+                                    "cache_lookup_failed: reason={}",
+                                    sqlite_error_kind(&error).label()
+                                );
                                 pending_stats.merge(StatsDelta::lookup_failure());
+                                let kind = sqlite_error_kind(&error);
+                                if kind.recovers_database() {
+                                    recover_connection(&data_dir, &mut connection, &state, kind);
+                                }
                                 PersistentLookup::Unavailable
                             }
                         }
@@ -531,15 +543,18 @@ fn worker_main(
                 }
                 CacheCommand::Store { store, epoch } => {
                     if epoch == current_epoch {
-                        if let Some(connection) = connection.as_mut() {
-                            match upsert_entry(connection, &store).and_then(|()| {
+                        if let Some(active_connection) = connection.as_mut() {
+                            match upsert_entry(active_connection, &store).and_then(|()| {
                                 enforce_capacity(
-                                    connection,
+                                    active_connection,
                                     &mut pending_touches,
                                     &mut pending_stats,
                                     capacity,
                                 )?;
-                                checkpoint_if_wal_large(connection, &database_path(&data_dir))
+                                checkpoint_if_wal_large(
+                                    active_connection,
+                                    &database_path(&data_dir),
+                                )
                             }) {
                                 Ok(()) => {
                                     if pending_touches.is_empty() && pending_stats.is_empty() {
@@ -548,9 +563,19 @@ fn worker_main(
                                 }
                                 Err(error) => {
                                     log::warn!(
-                                        "cache_store_failed: reason=sqlite logical_bytes={} error={error}",
+                                        "cache_store_failed: reason={} logical_bytes={}",
+                                        sqlite_error_kind(&error).label(),
                                         store.entry.logical_size_bytes
                                     );
+                                    let kind = sqlite_error_kind(&error);
+                                    if kind.recovers_database() {
+                                        recover_connection(
+                                            &data_dir,
+                                            &mut connection,
+                                            &state,
+                                            kind,
+                                        );
+                                    }
                                     pending_stats.merge(StatsDelta {
                                         store_failures: 1,
                                         ..StatsDelta::default()
@@ -574,13 +599,21 @@ fn worker_main(
                         }
                         pending_stats.merge(stats);
                         if pending_touches.len() >= TOUCH_BATCH_KEYS {
-                            if let Some(connection) = connection.as_mut() {
-                                if !flush_pending_or_record_touch_failure(
-                                    connection,
+                            if let Some(active_connection) = connection.as_mut() {
+                                if let Some(kind) = flush_pending_or_record_touch_failure(
+                                    active_connection,
                                     &mut pending_touches,
                                     &mut pending_stats,
                                 ) {
                                     pending_since = Some(std::time::Instant::now());
+                                    if kind.recovers_database() {
+                                        recover_connection(
+                                            &data_dir,
+                                            &mut connection,
+                                            &state,
+                                            kind,
+                                        );
+                                    }
                                 } else {
                                     pending_since = None;
                                 }
@@ -589,15 +622,32 @@ fn worker_main(
                     }
                 }
                 CacheCommand::Stats { reply } => {
-                    let result = if let Some(connection) = connection.as_mut() {
-                        flush_pending(connection, &mut pending_touches, &mut pending_stats)
-                            .and_then(|()| {
-                                read_stats_view(connection, state.load(), &database_path(&data_dir))
-                            })
-                            .map_err(|error| {
-                                log::warn!("cache_stats_failed: reason=sqlite error={error}");
-                                CacheOperationError::Unavailable
-                            })
+                    let result = if let Some(active_connection) = connection.as_mut() {
+                        match flush_pending(
+                            active_connection,
+                            &mut pending_touches,
+                            &mut pending_stats,
+                        )
+                        .and_then(|()| {
+                            read_stats_view(
+                                active_connection,
+                                state.load(),
+                                &database_path(&data_dir),
+                            )
+                        }) {
+                            Ok(stats) => Ok(stats),
+                            Err(error) => {
+                                log::warn!(
+                                    "cache_stats_failed: reason={}",
+                                    sqlite_error_kind(&error).label()
+                                );
+                                let kind = sqlite_error_kind(&error);
+                                if kind.recovers_database() {
+                                    recover_connection(&data_dir, &mut connection, &state, kind);
+                                }
+                                Err(CacheOperationError::Unavailable)
+                            }
+                        }
                     } else {
                         Ok(unavailable_stats_view(
                             state.load(),
@@ -612,11 +662,7 @@ fn worker_main(
                         let result = connection
                             .as_ref()
                             .map(|connection| {
-                                read_stats_view(
-                                    connection,
-                                    state.load(),
-                                    &database_path(&data_dir),
-                                )
+                                read_stats_view(connection, state.load(), &database_path(&data_dir))
                             })
                             .unwrap_or_else(|| {
                                 Ok(unavailable_stats_view(
@@ -639,7 +685,8 @@ fn worker_main(
                             "UPDATE cache_stats SET last_cleared_at_ms = ?1 WHERE id = 1",
                             [now_ms()],
                         )?;
-                        let stats = read_stats_view(&new_connection, PersistentCacheState::Ready, &path)?;
+                        let stats =
+                            read_stats_view(&new_connection, PersistentCacheState::Ready, &path)?;
                         connection = Some(new_connection);
                         state.store(PersistentCacheState::Ready);
                         Ok(stats)
@@ -657,6 +704,9 @@ fn worker_main(
                             &mut pending_touches,
                             &mut pending_stats,
                         );
+                        if passive_checkpoint(connection).is_err() {
+                            log::warn!("cache_shutdown_checkpoint_failed: reason=sqlite");
+                        }
                     }
                     connection.take();
                     let _ = reply.send(());
@@ -685,7 +735,123 @@ fn rebuild_empty_database(data_dir: &Path) -> rusqlite::Result<Connection> {
     open_connection(data_dir)
 }
 
+fn open_connection_with_recovery(data_dir: &Path) -> rusqlite::Result<Connection> {
+    match open_connection(data_dir) {
+        Ok(connection) => Ok(connection),
+        Err(error) if sqlite_error_kind(&error).recovers_on_open() => {
+            let reason = sqlite_error_kind(&error).label();
+            quarantine_database_family(data_dir)?;
+            let connection = open_connection(data_dir)?;
+            log::warn!("cache_rebuilt: reason={} quarantine_created=true", reason);
+            Ok(connection)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn recover_connection(
+    data_dir: &Path,
+    connection: &mut Option<Connection>,
+    state: &AtomicPersistentCacheState,
+    reason: SqliteErrorKind,
+) {
+    connection.take();
+    let rebuilt = if reason.recovers_database() {
+        quarantine_database_family(data_dir).and_then(|()| open_connection(data_dir))
+    } else {
+        open_connection_with_recovery(data_dir)
+    };
+    match rebuilt {
+        Ok(recovered) => {
+            *connection = Some(recovered);
+            state.store(PersistentCacheState::Ready);
+            log::warn!(
+                "cache_rebuilt: reason={} quarantine_created=true",
+                reason.label()
+            );
+        }
+        Err(error) => {
+            log::warn!(
+                "cache_worker_state_changed: from=ready to=degraded reason={}",
+                sqlite_error_kind(&error).label()
+            );
+            state.store(PersistentCacheState::Degraded);
+        }
+    }
+    log::warn!("cache_recovery_attempted: reason={}", reason.label());
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum SqliteErrorKind {
+    Busy,
+    Locked,
+    Io,
+    Corrupt,
+    NotADatabase,
+    Permission,
+    ReadOnly,
+    DiskFull,
+    CannotOpen,
+    Schema,
+    Other,
+}
+
+impl SqliteErrorKind {
+    fn recovers_database(self) -> bool {
+        matches!(self, Self::Corrupt | Self::NotADatabase | Self::Schema)
+    }
+
+    fn recovers_on_open(self) -> bool {
+        self.recovers_database() || matches!(self, Self::Other)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Busy => "busy",
+            Self::Locked => "locked",
+            Self::Io => "io",
+            Self::Corrupt => "corrupt",
+            Self::NotADatabase => "not_a_database",
+            Self::Permission => "permission",
+            Self::ReadOnly => "read_only",
+            Self::DiskFull => "disk_full",
+            Self::CannotOpen => "cannot_open",
+            Self::Schema => "schema",
+            Self::Other => "sqlite",
+        }
+    }
+}
+
+fn sqlite_error_kind(error: &rusqlite::Error) -> SqliteErrorKind {
+    match error {
+        rusqlite::Error::SqliteFailure(sqlite_error, _) => match sqlite_error.code {
+            rusqlite::ffi::ErrorCode::DatabaseBusy => SqliteErrorKind::Busy,
+            rusqlite::ffi::ErrorCode::DatabaseLocked => SqliteErrorKind::Locked,
+            rusqlite::ffi::ErrorCode::SystemIoFailure => SqliteErrorKind::Io,
+            rusqlite::ffi::ErrorCode::DatabaseCorrupt => SqliteErrorKind::Corrupt,
+            rusqlite::ffi::ErrorCode::NotADatabase => SqliteErrorKind::NotADatabase,
+            rusqlite::ffi::ErrorCode::PermissionDenied => SqliteErrorKind::Permission,
+            rusqlite::ffi::ErrorCode::ReadOnly => SqliteErrorKind::ReadOnly,
+            rusqlite::ffi::ErrorCode::DiskFull => SqliteErrorKind::DiskFull,
+            rusqlite::ffi::ErrorCode::CannotOpen => SqliteErrorKind::CannotOpen,
+            _ => SqliteErrorKind::Other,
+        },
+        rusqlite::Error::InvalidQuery => SqliteErrorKind::Schema,
+        _ => SqliteErrorKind::Other,
+    }
+}
+
 fn remove_cache_database_family(data_dir: &Path) -> rusqlite::Result<()> {
+    let cache_dir = validated_cache_dir(data_dir)?;
+
+    for suffix in DATABASE_FAMILY_SUFFIXES {
+        remove_validated_cache_file(&cache_dir, &format!("{DATABASE_FILE_NAME}{suffix}"))?;
+    }
+    remove_quarantine_database_families(&cache_dir)?;
+    Ok(())
+}
+
+fn validated_cache_dir(data_dir: &Path) -> rusqlite::Result<PathBuf> {
     std::fs::create_dir_all(data_dir)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let data_dir = std::fs::canonicalize(data_dir)
@@ -698,33 +864,53 @@ fn remove_cache_database_family(data_dir: &Path) -> rusqlite::Result<()> {
     if cache_dir != expected_cache_dir {
         return Err(rusqlite::Error::InvalidPath(cache_dir));
     }
+    Ok(cache_dir)
+}
 
-    for file_name in [
-        DATABASE_FILE_NAME.to_string(),
-        format!("{DATABASE_FILE_NAME}-wal"),
-        format!("{DATABASE_FILE_NAME}-shm"),
-    ] {
-        remove_validated_cache_file(&cache_dir, &file_name)?;
-    }
-    if let Some(quarantine) = latest_quarantine_database_name(&cache_dir)? {
-        for suffix in ["", "-wal", "-shm"] {
-            remove_validated_cache_file(&cache_dir, &format!("{quarantine}{suffix}"))?;
+fn quarantine_database_family(data_dir: &Path) -> rusqlite::Result<()> {
+    let cache_dir = validated_cache_dir(data_dir)?;
+    remove_quarantine_database_families(&cache_dir)?;
+    let quarantine = format!("translation_cache.corrupt-{}.sqlite3", now_ms());
+    for suffix in DATABASE_FAMILY_SUFFIXES {
+        let source = cache_dir.join(format!("{DATABASE_FILE_NAME}{suffix}"));
+        let target = cache_dir.join(format!("{quarantine}{suffix}"));
+        if source.parent() != Some(&cache_dir) || target.parent() != Some(&cache_dir) {
+            return Err(rusqlite::Error::InvalidPath(source));
+        }
+        if let Ok(metadata) = std::fs::symlink_metadata(&source) {
+            if metadata.file_type().is_symlink() {
+                return Err(rusqlite::Error::InvalidPath(source));
+            }
+        }
+        match std::fs::rename(&source, &target) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(error))),
         }
     }
     Ok(())
 }
 
-fn latest_quarantine_database_name(cache_dir: &Path) -> rusqlite::Result<Option<String>> {
+fn remove_quarantine_database_families(cache_dir: &Path) -> rusqlite::Result<()> {
+    for quarantine in quarantine_database_names(cache_dir)? {
+        for suffix in DATABASE_FAMILY_SUFFIXES {
+            remove_validated_cache_file(cache_dir, &format!("{quarantine}{suffix}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn quarantine_database_names(cache_dir: &Path) -> rusqlite::Result<Vec<String>> {
     let entries = std::fs::read_dir(cache_dir)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-    let mut latest: Option<(u64, String)> = None;
+    let mut names = Vec::new();
     for entry in entries {
         let entry =
             entry.map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        let Some(timestamp) = name
+        let Some(_) = name
             .strip_prefix("translation_cache.corrupt-")
             .and_then(|value| value.strip_suffix(".sqlite3"))
             .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
@@ -732,14 +918,9 @@ fn latest_quarantine_database_name(cache_dir: &Path) -> rusqlite::Result<Option<
         else {
             continue;
         };
-        if latest
-            .as_ref()
-            .map_or(true, |(current, _)| timestamp > *current)
-        {
-            latest = Some((timestamp, name));
-        }
+        names.push(name);
     }
-    Ok(latest.map(|(_, name)| name))
+    Ok(names)
 }
 
 fn remove_validated_cache_file(cache_dir: &Path, file_name: &str) -> rusqlite::Result<()> {
@@ -959,7 +1140,15 @@ fn lookup_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<Pers
                 ))
             },
         )
-        .optional()?;
+        .optional();
+    let row = match row {
+        Ok(row) => row,
+        Err(error) if is_invalid_row_error(&error) => {
+            delete_invalid_entry(connection, key)?;
+            return Ok(PersistentLookup::Miss);
+        }
+        Err(error) => return Err(error),
+    };
     let Some((
         text,
         backend,
@@ -975,12 +1164,21 @@ fn lookup_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<Pers
     else {
         return Ok(PersistentLookup::Miss);
     };
-    let Some(backend) = parse_backend_storage_label(&backend) else {
+    let valid = parse_backend_storage_label(&backend).filter(|_| {
+        !text.is_empty()
+            && !provider.is_empty()
+            && !model.is_empty()
+            && generated >= 0
+            && accessed >= 0
+            && hits >= 0
+            && source_bytes >= 0
+            && text_bytes >= 0
+            && logical_bytes >= 0
+    });
+    let Some(backend) = valid else {
+        delete_invalid_entry(connection, key)?;
         return Ok(PersistentLookup::Miss);
     };
-    if text.is_empty() || hits < 0 || source_bytes < 0 || text_bytes < 0 || logical_bytes < 0 {
-        return Ok(PersistentLookup::Miss);
-    }
     Ok(PersistentLookup::Hit(CacheEntry {
         key,
         result: Arc::new(BackendResult {
@@ -999,6 +1197,24 @@ fn lookup_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<Pers
         logical_size_bytes: logical_bytes as u64,
         access_tick: 0,
     }))
+}
+
+fn is_invalid_row_error(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::Utf8Error(..)
+            | rusqlite::Error::InvalidColumnType(..)
+    )
+}
+
+fn delete_invalid_entry(connection: &Connection, key: CacheKey) -> rusqlite::Result<()> {
+    connection.execute(
+        "DELETE FROM cache_entries WHERE cache_key = ?1",
+        [key.as_bytes().as_slice()],
+    )?;
+    Ok(())
 }
 
 fn merge_touch(pending: &mut BTreeMap<CacheKey, TouchRecord>, touch: TouchRecord) {
@@ -1071,13 +1287,16 @@ fn flush_pending_or_record_touch_failure(
     connection: &mut Connection,
     touches: &mut BTreeMap<CacheKey, TouchRecord>,
     stats: &mut StatsDelta,
-) -> bool {
+) -> Option<SqliteErrorKind> {
     match flush_pending(connection, touches, stats) {
-        Ok(()) => true,
+        Ok(()) => None,
         Err(error) => {
-            log::warn!("cache_touch_failed: reason=sqlite error={error}");
+            log::warn!(
+                "cache_touch_failed: reason={}",
+                sqlite_error_kind(&error).label()
+            );
             stats.merge(StatsDelta::touch_failure());
-            false
+            Some(sqlite_error_kind(&error))
         }
     }
 }
@@ -1222,6 +1441,152 @@ mod tests {
         };
         assert_eq!(entry.result.translated_text, "持久译文");
         reopened.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn corrupt_database_is_quarantined_and_recreated_on_start() {
+        let dir = TestDir::new("corrupt-start");
+        let path = database_path(&dir.0);
+        std::fs::create_dir_all(path.parent().expect("cache database has a parent"))
+            .expect("cache directory should be created");
+        std::fs::write(&path, b"not a sqlite database").expect("corrupt database should be seeded");
+        std::fs::write(
+            path.parent()
+                .expect("cache database has a parent")
+                .join("translation_cache.corrupt-1.sqlite3"),
+            b"older quarantine",
+        )
+        .expect("older quarantine should be seeded");
+
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert_eq!(
+            worker
+                .stats()
+                .await
+                .expect("recreated database should be usable")
+                .entry_count,
+            0
+        );
+        worker.shutdown().await;
+
+        let quarantines: Vec<_> = std::fs::read_dir(dir.0.join("cache"))
+            .expect("cache directory should be readable")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                name.starts_with("translation_cache.corrupt-") && name.ends_with(".sqlite3")
+            })
+            .collect();
+        assert_eq!(
+            quarantines.len(),
+            1,
+            "the corrupt database must be retained for recovery"
+        );
+    }
+
+    #[tokio::test]
+    async fn newer_schema_version_is_quarantined_and_recreated_on_start() {
+        let dir = TestDir::new("newer-schema-start");
+        let path = database_path(&dir.0);
+        std::fs::create_dir_all(path.parent().expect("cache database has a parent"))
+            .expect("cache directory should be created");
+        let connection = Connection::open(&path).expect("database should be created");
+        connection
+            .execute_batch("PRAGMA user_version = 2;")
+            .expect("newer schema version should be seeded");
+        drop(connection);
+
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert_eq!(
+            worker
+                .stats()
+                .await
+                .expect("recreated database should be usable")
+                .entry_count,
+            0
+        );
+        worker.shutdown().await;
+
+        assert!(std::fs::read_dir(dir.0.join("cache"))
+            .expect("cache directory should be readable")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .any(
+                |name| name.starts_with("translation_cache.corrupt-") && name.ends_with(".sqlite3")
+            ));
+    }
+
+    #[tokio::test]
+    async fn invalid_single_row_is_missed_and_removed_without_rebuilding_database() {
+        let dir = TestDir::new("invalid-row");
+        let key = CacheKey::from_seed(29);
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert!(worker.try_store(store(29, "有效译文"), 0));
+        worker.shutdown().await;
+
+        let connection = Connection::open(database_path(&dir.0)).expect("database should open");
+        connection
+            .execute(
+                "UPDATE cache_entries SET source_backend = 'invalid-backend' WHERE cache_key = ?1",
+                [key.as_bytes().as_slice()],
+            )
+            .expect("invalid row should be seeded");
+        drop(connection);
+
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert!(matches!(
+            worker.lookup(key, 0).await,
+            PersistentLookup::Miss
+        ));
+        let stats = worker
+            .stats()
+            .await
+            .expect("worker should remain ready after invalid row");
+        assert_eq!(stats.state, PersistentCacheState::Ready);
+        assert_eq!(
+            stats.entry_count, 0,
+            "only the invalid row should be deleted"
+        );
+        worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn undecodable_single_row_is_missed_and_removed_without_rebuilding_database() {
+        let dir = TestDir::new("undecodable-row");
+        let key = CacheKey::from_seed(30);
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert!(worker.try_store(store(30, "有效译文"), 0));
+        worker.shutdown().await;
+
+        let connection = Connection::open(database_path(&dir.0)).expect("database should open");
+        connection
+            .execute(
+                "UPDATE cache_entries SET source_backend = x'FF' WHERE cache_key = ?1",
+                [key.as_bytes().as_slice()],
+            )
+            .expect("undecodable row should be seeded");
+        drop(connection);
+
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert!(matches!(
+            worker.lookup(key, 0).await,
+            PersistentLookup::Miss
+        ));
+        assert_eq!(
+            worker
+                .stats()
+                .await
+                .expect("worker should remain ready after undecodable row")
+                .entry_count,
+            0
+        );
+        worker.shutdown().await;
     }
 
     #[tokio::test]
@@ -1544,7 +1909,7 @@ mod tests {
         let invalid_root = dir.0.join("not-a-directory");
         std::fs::create_dir_all(&dir.0).expect("temp root should be created");
         std::fs::write(&invalid_root, b"file").expect("invalid data root should be created");
-        let failed = PersistentCacheWorker::start(invalid_root);
+        let failed = PersistentCacheWorker::start(invalid_root.clone());
         let wait = async {
             while failed.state() == PersistentCacheState::Starting {
                 tokio::task::yield_now().await;
@@ -1558,6 +1923,14 @@ mod tests {
             failed.lookup(CacheKey::from_seed(1), 0).await,
             PersistentLookup::Unavailable
         ));
+        std::fs::remove_file(&invalid_root)
+            .expect("test-only permanent init failure should be repairable");
+        let rebuilt = failed
+            .clear(1)
+            .await
+            .expect("an explicit rebuild should recover a degraded cache");
+        assert_eq!(rebuilt.state, PersistentCacheState::Ready);
+        assert!(failed.try_store(store(8, "recovered"), 1));
         failed.shutdown().await;
     }
 
@@ -1575,6 +1948,27 @@ mod tests {
         assert!(matches!(lookup, PersistentLookup::Unavailable));
         assert!(started.elapsed() < Duration::from_millis(100));
         worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn shutdown_flushes_and_closes_within_the_lifecycle_budget() {
+        let dir = TestDir::new("shutdown-budget");
+        let worker = PersistentCacheWorker::start(dir.0.clone());
+        worker.wait_until_ready().await;
+        assert!(worker.try_store(store(31, "待退出写入"), 0));
+
+        let started = Instant::now();
+        worker.shutdown().await;
+        assert!(started.elapsed() <= Duration::from_secs(1));
+        assert_eq!(worker.state(), PersistentCacheState::Stopped);
+
+        let reopened = PersistentCacheWorker::start(dir.0.clone());
+        reopened.wait_until_ready().await;
+        assert!(matches!(
+            reopened.lookup(CacheKey::from_seed(31), 0).await,
+            PersistentLookup::Hit(_)
+        ));
+        reopened.shutdown().await;
     }
 
     #[tokio::test]

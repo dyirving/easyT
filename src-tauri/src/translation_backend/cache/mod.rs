@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn clear_removes_only_the_latest_quarantine_group() {
+    async fn clear_removes_all_quarantine_groups_to_restore_the_single_group_invariant() {
         let dir = TestDir::new("clear-quarantine");
         let cache_dir = dir.0.join("cache");
         std::fs::create_dir_all(&cache_dir).expect("cache directory should be created");
@@ -344,7 +344,7 @@ mod tests {
         cache.wait_until_persistent_ready().await;
         cache.clear().await.expect("clear should succeed");
 
-        assert!(cache_dir.join(older).exists());
+        assert!(!cache_dir.join(older).exists());
         assert!(!cache_dir.join(latest).exists());
         assert!(!cache_dir
             .join("translation_cache.corrupt-200.sqlite3-wal")

@@ -39,6 +39,7 @@ zeroize = { version = "1", features = ["alloc"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 blake3 = "1.8.6"
 lru = "0.12.5"
+rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 
 # Windows API：获取鼠标位置、显示器工作区，以及原子替换凭证文件
 # 仅 Windows 平台需要；通过 features 启用所需子集

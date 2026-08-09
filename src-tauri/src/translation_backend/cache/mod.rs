@@ -7,27 +7,40 @@
 pub mod entry;
 pub mod key;
 pub mod memory;
+pub mod persistent;
 
 pub use entry::{CacheEntry, CacheLookupOutcome, CacheStatus};
 pub use key::{is_definitely_oversized, prepare_cache_input, NormalizedCacheInput};
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::translation_backend::models::BackendResult;
 
 use self::entry::now_ms;
 use self::key::MAX_ENTRY_LOGICAL_BYTES;
+use self::persistent::{PersistentCacheWorker, PersistentLookup, PersistentStore};
 
-/// L1 缓存门面。`start()` 永不失败：L1 分配即成功。
+/// L1/L2 缓存门面。`start()` 永不失败：L1 立即可用，L2 异步初始化。
 pub struct TranslationCache {
     memory: memory::MemoryCache,
+    persistent: PersistentCacheWorker,
 }
 
 impl TranslationCache {
-    /// 启动：L1 立即可用；L2（03 工单）将以异步 Starting/Degraded 挂接。
-    pub fn start() -> Arc<Self> {
+    /// 启动：L1 立即可用；L2 以异步 Starting/Ready/Degraded 状态挂接。
+    pub fn start(data_dir: &Path) -> Arc<Self> {
         Arc::new(Self {
             memory: memory::MemoryCache::new(),
+            persistent: PersistentCacheWorker::start(data_dir.to_path_buf()),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn memory_only_for_tests() -> Arc<Self> {
+        Arc::new(Self {
+            memory: memory::MemoryCache::new(),
+            persistent: PersistentCacheWorker::disabled(),
         })
     }
 
@@ -36,7 +49,7 @@ impl TranslationCache {
         self.memory.current_epoch()
     }
 
-    /// 查找：L1 命中 → MemoryHit；未命中 → Miss（L2 worker 在 03 接入查找链）。
+    /// 查找：L1 命中 → MemoryHit；否则在固定预算内查 L2，并将有效命中提升到 L1。
     /// 命中缓存即使流式输出也一次性返回，不伪造 delta。
     pub async fn lookup(&self, input: &NormalizedCacheInput) -> CacheLookupOutcome {
         match self.memory.lookup(&input.key) {
@@ -44,10 +57,29 @@ impl TranslationCache {
                 status: CacheStatus::MemoryHit,
                 result: Some(result),
             },
-            None => CacheLookupOutcome {
-                status: CacheStatus::Miss,
-                result: None,
-            },
+            None => {
+                let epoch = self.memory.current_epoch();
+                match self.persistent.lookup(input.key, epoch).await {
+                    PersistentLookup::Hit(entry)
+                        if self.memory.insert_if_epoch(
+                            entry.clone(),
+                            input.is_short_text,
+                            epoch,
+                        ) =>
+                    {
+                        CacheLookupOutcome {
+                            status: CacheStatus::PersistentHit,
+                            result: Some(entry.result),
+                        }
+                    }
+                    PersistentLookup::Hit(_)
+                    | PersistentLookup::Miss
+                    | PersistentLookup::Unavailable => CacheLookupOutcome {
+                        status: CacheStatus::Miss,
+                        result: None,
+                    },
+                }
+            }
         }
     }
 
@@ -73,8 +105,18 @@ impl TranslationCache {
             logical_size_bytes: size,
             access_tick: 0,
         };
-        self.memory
-            .insert_if_epoch(entry, input.is_short_text, epoch);
+        if self
+            .memory
+            .insert_if_epoch(entry.clone(), input.is_short_text, epoch)
+        {
+            let _ = self.persistent.try_store(
+                PersistentStore {
+                    entry,
+                    target_language: input.target_language.clone(),
+                },
+                epoch,
+            );
+        }
     }
 
     /// 清空 L1 并推进 epoch，使在途写入失效（清除命令入口由 04 工单接入）。
@@ -82,11 +124,37 @@ impl TranslationCache {
     pub fn clear_l1(&self) {
         self.memory.clear_and_advance_epoch();
     }
+
+    pub async fn shutdown(&self) {
+        self.persistent.shutdown().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_until_persistent_ready(&self) {
+        self.persistent.wait_until_ready().await;
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestDir(std::path::PathBuf);
+
+    impl TestDir {
+        fn new() -> Self {
+            Self(
+                std::env::temp_dir()
+                    .join(format!("easyT-cache-facade-test-{}", uuid::Uuid::new_v4())),
+            )
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn input(text: &str, target: &str) -> NormalizedCacheInput {
         prepare_cache_input(text, target)
@@ -105,7 +173,7 @@ mod tests {
 
     #[tokio::test]
     async fn store_then_lookup_returns_memory_hit() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let i = input("hello", "简体中文");
         let epoch = cache.current_epoch();
         cache.store(&i, &result("你好"), epoch);
@@ -116,7 +184,7 @@ mod tests {
 
     #[tokio::test]
     async fn lookup_miss_returns_none() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let i = input("hello", "zh");
         let outcome = cache.lookup(&i).await;
         assert_eq!(outcome.status, CacheStatus::Miss);
@@ -125,7 +193,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_result_is_not_stored() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let i = input("hello", "zh");
         cache.store(&i, &result(""), cache.current_epoch());
         let outcome = cache.lookup(&i).await;
@@ -134,7 +202,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_entry_is_skipped_but_exact_limit_is_stored() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let i = input("hello", "zh");
         let epoch = cache.current_epoch();
 
@@ -157,7 +225,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_epoch_store_is_rejected() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let i = input("hello", "zh");
         let old_epoch = cache.current_epoch();
         cache.clear_l1();
@@ -168,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn cross_target_language_miss() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         cache.store(
             &input("hello", "zh"),
             &result("你好"),
@@ -176,5 +244,41 @@ mod tests {
         );
         let outcome = cache.lookup(&input("hello", "en")).await;
         assert_eq!(outcome.status, CacheStatus::Miss);
+    }
+
+    #[tokio::test]
+    async fn write_behind_survives_cache_restart_and_promotes_to_l1() {
+        let dir = TestDir::new();
+        let input = input("hello", "zh");
+        let first = TranslationCache::start(&dir.0);
+        first.wait_until_persistent_ready().await;
+        first.store(&input, &result("持久译文"), first.current_epoch());
+        first.shutdown().await;
+
+        let reopened = TranslationCache::start(&dir.0);
+        reopened.wait_until_persistent_ready().await;
+        let persistent = reopened.lookup(&input).await;
+        assert_eq!(persistent.status, CacheStatus::PersistentHit);
+        assert_eq!(persistent.result.unwrap().translated_text, "持久译文");
+
+        let promoted = reopened.lookup(&input).await;
+        assert_eq!(promoted.status, CacheStatus::MemoryHit);
+        reopened.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn unavailable_persistent_cache_does_not_disable_l1() {
+        let dir = TestDir::new();
+        std::fs::create_dir_all(&dir.0).expect("temp root should be created");
+        let invalid_data_dir = dir.0.join("file-not-directory");
+        std::fs::write(&invalid_data_dir, b"file").expect("invalid data root should be created");
+
+        let cache = TranslationCache::start(&invalid_data_dir);
+        let input = input("hello", "zh");
+        cache.store(&input, &result("仍可用"), cache.current_epoch());
+        let outcome = cache.lookup(&input).await;
+        assert_eq!(outcome.status, CacheStatus::MemoryHit);
+        assert_eq!(outcome.result.unwrap().translated_text, "仍可用");
+        cache.shutdown().await;
     }
 }

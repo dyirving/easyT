@@ -91,8 +91,8 @@ pub fn run() {
 
             // 初始化 TranslationBackend 并恢复 Qwen 登录态
             let http_client = reqwest::Client::new();
-            // L1 缓存立即可用；缓存始终启用（规则文档），L2 持久化由后续工单挂接
-            let cache = TranslationCache::start();
+            // L1 立即可用；L2 在专用 worker 中异步初始化，失败时静默降级到 L1。
+            let cache = TranslationCache::start(&data_dir);
             let backend = TranslationBackend::new(http_client, Arc::clone(&cache));
             // 启动时只检查 credentials.bin 是否存在且格式有效，不创建登录 WebView
             let qwen_session = backend.web_gateway().qwen_session();
@@ -216,6 +216,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 }
                 if let Err(e) = shortcut::unregister_all(app) {
                     log::warn!("退出前注销快捷键失败: {e}");
+                }
+                if let Some(cache) = app.try_state::<Arc<TranslationCache>>() {
+                    tauri::async_runtime::block_on(cache.shutdown());
                 }
                 app.exit(0);
             }

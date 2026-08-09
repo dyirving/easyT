@@ -29,6 +29,15 @@ pub enum CacheStatus {
     Bypassed,
 }
 
+/// L2 worker 生命周期；普通翻译在非 Ready 状态下直接按 miss 继续。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PersistentCacheState {
+    Starting,
+    Ready,
+    Degraded,
+    Stopped,
+}
+
 /// 缓存查找结果：命中时携带完整译文（Arc 共享，避免复制）。
 /// `status` 由 03 工单在 L2 查找链读取并对外报告。
 #[derive(Debug)]

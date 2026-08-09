@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn use_policy_miss_fetches_stores_then_hits_without_network() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = prepare_cache_input("hello", "简体中文");
         let calls = Arc::new(AtomicUsize::new(0));
 
@@ -459,7 +459,7 @@ mod tests {
 
     #[test]
     fn use_hit_returns_same_content_regardless_of_fetch() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = parse_input("hello", "en");
         let calls = Arc::new(AtomicUsize::new(0));
         run_use(&cache, &input, "A", Arc::clone(&calls));
@@ -471,7 +471,7 @@ mod tests {
 
     #[test]
     fn definitely_oversized_use_skips_cache_lookup() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let small = parse_input("hello", "en");
         let calls = Arc::new(AtomicUsize::new(0));
         run_use(&cache, &small, "cached", Arc::clone(&calls));
@@ -496,7 +496,7 @@ mod tests {
 
     #[test]
     fn refresh_skips_read_and_overwrites_shared_entry() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = parse_input("hello", "en");
         let calls = Arc::new(AtomicUsize::new(0));
 
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn bypass_never_reads_or_writes() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = parse_input("hello", "en");
         let calls = Arc::new(AtomicUsize::new(0));
 
@@ -535,7 +535,7 @@ mod tests {
 
     #[test]
     fn empty_result_never_stored() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = parse_input("abc", "en");
         let calls = Arc::new(AtomicUsize::new(0));
 
@@ -560,7 +560,7 @@ mod tests {
 
     #[test]
     fn fetch_error_propagates_and_nothing_is_stored() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let input = parse_input("abc", "en");
         let calls = Arc::new(AtomicUsize::new(0));
 
@@ -586,7 +586,7 @@ mod tests {
 
     #[test]
     fn different_target_language_misses() {
-        let cache = TranslationCache::start();
+        let cache = TranslationCache::memory_only_for_tests();
         let zh = parse_input("hello", "zh");
         let en = parse_input("hello", "en");
         let calls = Arc::new(AtomicUsize::new(0));

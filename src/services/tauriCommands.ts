@@ -4,6 +4,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import {
   type AppConfig,
+  type CacheStats,
   type ErrorKind,
   type QwenSessionStatus,
   type WebProviderKind,
@@ -28,6 +29,10 @@ export async function getConfig(): Promise<AppConfig> {
  */
 export async function saveConfig(config: AppConfig): Promise<void> {
   await invoke<void>("save_config", { config });
+}
+
+export async function getTranslationCacheStats(): Promise<CacheStats> {
+  return invoke<CacheStats>("get_translation_cache_stats");
 }
 
 /**

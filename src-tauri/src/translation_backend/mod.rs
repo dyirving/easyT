@@ -225,6 +225,8 @@ where
                         cache_status: outcome.status,
                     });
                 }
+            } else {
+                cache.record_oversized_bypass(epoch);
             }
             let result = fetch.await?;
             if is_cacheable_result(&result) {
@@ -236,6 +238,7 @@ where
             })
         }
         CachePolicy::Refresh => {
+            cache.record_refresh(epoch);
             let result = fetch.await?;
             if is_cacheable_result(&result) {
                 cache.store(input, &result, epoch);
@@ -246,6 +249,7 @@ where
             })
         }
         CachePolicy::Bypass => {
+            cache.record_bypass(epoch);
             let result = fetch.await?;
             Ok(TranslationOutcome {
                 result,

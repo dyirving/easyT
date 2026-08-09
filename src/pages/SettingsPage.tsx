@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   LogIn,
   LogOut,
+  Database,
 } from "lucide-react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import {
@@ -24,6 +25,7 @@ import { Input } from "@/components/ui/Input";
 import { Button } from "@/components/ui/Button";
 import { Switch } from "@/components/ui/Switch";
 import { ShortcutInput } from "@/components/ShortcutInput";
+import { CacheDetailsDialog } from "@/components/CacheDetailsDialog";
 import {
   TARGET_LANGUAGES,
   MODEL_PROVIDERS,
@@ -54,6 +56,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
   const [saveError, setSaveError] = useState(false);
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [cacheDetailsOpen, setCacheDetailsOpen] = useState(false);
 
   // WebGateway 登录状态
   const [loginStatus, setLoginStatus] = useState<QwenSessionStatus | null>(
@@ -444,6 +447,19 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
             </div>
           </div>
 
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-line bg-surface-soft/40 px-3 py-3">
+            <div>
+              <p className="text-sm font-medium text-ink">翻译缓存</p>
+              <p className="text-xs text-ink-muted">
+                查看本机缓存的条目、磁盘占用、命中率和保存位置
+              </p>
+            </div>
+            <Button variant="outline" onClick={() => setCacheDetailsOpen(true)}>
+              <Database className="h-4 w-4" />
+              查看缓存详情
+            </Button>
+          </div>
+
           <div className="flex items-center gap-2 pt-1">
             <Button variant="primary" onClick={handleSave} disabled={saving}>
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : "保存"}
@@ -482,6 +498,10 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
           </div>
         </div>
       </div>
+      <CacheDetailsDialog
+        open={cacheDetailsOpen}
+        onClose={() => setCacheDetailsOpen(false)}
+      />
     </div>
   );
 }

@@ -38,6 +38,21 @@ export interface TranslationState {
   pinned: boolean;
 }
 
+export type PersistentCacheState =
+  | "starting"
+  | "ready"
+  | "degraded"
+  | "stopped";
+
+export interface CacheStats {
+  state: PersistentCacheState;
+  entryCount: number;
+  diskBytes: number;
+  maxDiskBytes: number;
+  hitRate: number | null;
+  cachePath: string;
+}
+
 /**
  * 目标语言可选项
  */
@@ -311,6 +326,7 @@ export const ERROR_KIND = {
   ApiRequestFailed: "ApiRequestFailed",
   ApiResponseInvalid: "ApiResponseInvalid",
   WindowError: "WindowError",
+  CacheOperationFailed: "CacheOperationFailed",
   // ===== Backend 错误（来自 TranslationBackend）=====
   /** WebGateway 模式下本地无可用凭证，需要用户先登录 */
   LoginRequired: "LoginRequired",

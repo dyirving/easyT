@@ -9,7 +9,7 @@ pub mod key;
 pub mod memory;
 pub mod persistent;
 
-pub use entry::{CacheEntry, CacheLookupOutcome, CacheStatus};
+pub use entry::{CacheEntry, CacheLookupOutcome, CacheOperationError, CacheStatsView, CacheStatus};
 pub use key::{is_definitely_oversized, prepare_cache_input, NormalizedCacheInput};
 
 use std::path::Path;
@@ -19,7 +19,9 @@ use crate::translation_backend::models::BackendResult;
 
 use self::entry::now_ms;
 use self::key::MAX_ENTRY_LOGICAL_BYTES;
-use self::persistent::{PersistentCacheWorker, PersistentLookup, PersistentStore};
+use self::persistent::{
+    PersistentCacheWorker, PersistentLookup, PersistentStore, StatsDelta, TouchRecord,
+};
 
 /// L1/L2 缓存门面。`start()` 永不失败：L1 立即可用，L2 异步初始化。
 pub struct TranslationCache {
@@ -52,34 +54,53 @@ impl TranslationCache {
     /// 查找：L1 命中 → MemoryHit；否则在固定预算内查 L2，并将有效命中提升到 L1。
     /// 命中缓存即使流式输出也一次性返回，不伪造 delta。
     pub async fn lookup(&self, input: &NormalizedCacheInput) -> CacheLookupOutcome {
+        let epoch = self.memory.current_epoch();
         match self.memory.lookup(&input.key) {
-            Some(result) => CacheLookupOutcome {
-                status: CacheStatus::MemoryHit,
-                result: Some(result),
-            },
-            None => {
-                let epoch = self.memory.current_epoch();
-                match self.persistent.lookup(input.key, epoch).await {
-                    PersistentLookup::Hit(entry)
-                        if self.memory.insert_if_epoch(
-                            entry.clone(),
-                            input.is_short_text,
-                            epoch,
-                        ) =>
-                    {
-                        CacheLookupOutcome {
-                            status: CacheStatus::PersistentHit,
-                            result: Some(entry.result),
-                        }
-                    }
-                    PersistentLookup::Hit(_)
-                    | PersistentLookup::Miss
-                    | PersistentLookup::Unavailable => CacheLookupOutcome {
-                        status: CacheStatus::Miss,
-                        result: None,
+            Some(result) => {
+                let _ = self.persistent.try_touch(
+                    TouchRecord {
+                        key: input.key,
+                        accessed_at_ms: now_ms(),
+                        hit_delta: 1,
                     },
+                    StatsDelta::l1_hit(),
+                    epoch,
+                );
+                CacheLookupOutcome {
+                    status: CacheStatus::MemoryHit,
+                    result: Some(result),
                 }
             }
+            None => match self.persistent.lookup(input.key, epoch).await {
+                PersistentLookup::Hit(entry)
+                    if self
+                        .memory
+                        .insert_if_epoch(entry.clone(), input.is_short_text, epoch) =>
+                {
+                    let _ = self.persistent.try_touch(
+                        TouchRecord {
+                            key: input.key,
+                            accessed_at_ms: now_ms(),
+                            hit_delta: 1,
+                        },
+                        StatsDelta::l2_hit(),
+                        epoch,
+                    );
+                    CacheLookupOutcome {
+                        status: CacheStatus::PersistentHit,
+                        result: Some(entry.result),
+                    }
+                }
+                PersistentLookup::Hit(_)
+                | PersistentLookup::Miss
+                | PersistentLookup::Unavailable => {
+                    let _ = self.persistent.try_record_stats(StatsDelta::miss(), epoch);
+                    CacheLookupOutcome {
+                        status: CacheStatus::Miss,
+                        result: None,
+                    }
+                }
+            },
         }
     }
 
@@ -127,6 +148,28 @@ impl TranslationCache {
 
     pub async fn shutdown(&self) {
         self.persistent.shutdown().await;
+    }
+
+    pub async fn stats(&self) -> Result<CacheStatsView, CacheOperationError> {
+        self.persistent.stats().await
+    }
+
+    pub(crate) fn record_bypass(&self, epoch: u64) {
+        let _ = self
+            .persistent
+            .try_record_stats(StatsDelta::bypass(), epoch);
+    }
+
+    pub(crate) fn record_refresh(&self, epoch: u64) {
+        let _ = self
+            .persistent
+            .try_record_stats(StatsDelta::refresh(), epoch);
+    }
+
+    pub(crate) fn record_oversized_bypass(&self, epoch: u64) {
+        let _ = self
+            .persistent
+            .try_record_stats(StatsDelta::oversized_bypass(), epoch);
     }
 
     #[cfg(test)]
@@ -284,5 +327,44 @@ mod tests {
         assert_eq!(outcome.status, CacheStatus::MemoryHit);
         assert_eq!(outcome.result.unwrap().translated_text, "仍可用");
         cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn public_hit_rate_counts_only_hits_and_misses_and_survives_restart() {
+        let dir = TestDir::new("stats");
+        let cached = input("hello", "zh");
+        let missing = input("missing", "zh");
+
+        let first = TranslationCache::start(&dir.0);
+        first.wait_until_persistent_ready().await;
+        first.store(&cached, &result("你好"), first.current_epoch());
+        assert_eq!(first.lookup(&cached).await.status, CacheStatus::MemoryHit);
+        assert_eq!(first.lookup(&missing).await.status, CacheStatus::Miss);
+        first.record_bypass(first.current_epoch());
+        first.record_refresh(first.current_epoch());
+        first.record_oversized_bypass(first.current_epoch());
+        first.shutdown().await;
+
+        let reopened = TranslationCache::start(&dir.0);
+        reopened.wait_until_persistent_ready().await;
+        assert_eq!(
+            reopened.lookup(&cached).await.status,
+            CacheStatus::PersistentHit
+        );
+        let stats = reopened.stats().await.expect("stats should be available");
+        assert_eq!(stats.state, entry::PersistentCacheState::Ready);
+        assert_eq!(stats.entry_count, 1);
+        assert_eq!(stats.max_disk_bytes, 256 * 1024 * 1024);
+        assert!((stats.hit_rate.expect("rate should exist") - (2.0 / 3.0)).abs() < 0.000_001);
+        assert!(stats
+            .cache_path
+            .ends_with("cache\\translation_cache.sqlite3"));
+        reopened.shutdown().await;
+
+        let third = TranslationCache::start(&dir.0);
+        third.wait_until_persistent_ready().await;
+        let persisted = third.stats().await.expect("stats should survive restart");
+        assert!((persisted.hit_rate.expect("rate should persist") - (2.0 / 3.0)).abs() < 0.000_001);
+        third.shutdown().await;
     }
 }

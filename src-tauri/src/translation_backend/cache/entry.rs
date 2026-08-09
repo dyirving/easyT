@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use serde::Serialize;
+
 use crate::translation_backend::models::{BackendMode, BackendResult};
 
 use super::key::CacheKey;
@@ -30,13 +32,31 @@ pub enum CacheStatus {
 }
 
 /// L2 worker 生命周期；普通翻译在非 Ready 状态下直接按 miss 继续。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 #[repr(u8)]
 pub enum PersistentCacheState {
     Starting,
     Ready,
     Degraded,
     Stopped,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheStatsView {
+    pub state: PersistentCacheState,
+    pub entry_count: u64,
+    pub disk_bytes: u64,
+    pub max_disk_bytes: u64,
+    pub hit_rate: Option<f64>,
+    pub cache_path: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CacheOperationError {
+    #[error("无法读取缓存详情")]
+    Unavailable,
 }
 
 pub(super) fn backend_storage_label(backend: BackendMode) -> &'static str {

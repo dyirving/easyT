@@ -44,6 +44,9 @@ pub enum AppError {
     #[error("窗口操作失败: {0}")]
     WindowError(String),
 
+    #[error("缓存操作失败: {0}")]
+    CacheOperationFailed(String),
+
     // ===== Backend 错误（来自 TranslationBackend）=====
     #[error("请先在设置中登录 Qwen")]
     LoginRequired,
@@ -95,6 +98,7 @@ impl AppError {
             AppError::ApiRequestFailed(_) => "ApiRequestFailed",
             AppError::ApiResponseInvalid(_) => "ApiResponseInvalid",
             AppError::WindowError(_) => "WindowError",
+            AppError::CacheOperationFailed(_) => "CacheOperationFailed",
             AppError::LoginRequired => "LoginRequired",
             AppError::SessionExpired => "SessionExpired",
             AppError::BackendCancelled => "BackendCancelled",

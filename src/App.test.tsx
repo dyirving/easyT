@@ -68,6 +68,9 @@ describe("App shortcut route gating", () => {
     render(<App />);
     user.click(await screen.findByRole("button", { name: "打开设置" }));
     await screen.findByText(/全局快捷键/);
+    expect(
+      screen.getByRole("button", { name: "查看缓存详情" }),
+    ).toBeInTheDocument();
 
     registry.emit("shortcut://translate");
 

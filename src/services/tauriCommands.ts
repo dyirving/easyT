@@ -35,6 +35,10 @@ export async function getTranslationCacheStats(): Promise<CacheStats> {
   return invoke<CacheStats>("get_translation_cache_stats");
 }
 
+export async function clearTranslationCache(): Promise<CacheStats> {
+  return invoke<CacheStats>("clear_translation_cache");
+}
+
 /**
  * 捕获选中文本
  * 阶段7已接入：通过 Rust 端模拟 Ctrl+C + 剪贴板读写实现

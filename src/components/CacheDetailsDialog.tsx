@@ -3,6 +3,7 @@ import { Loader2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/Button";
 import {
+  clearTranslationCache,
   getTranslationCacheStats,
   toCommandError,
 } from "@/services/tauriCommands";
@@ -11,6 +12,7 @@ import type { CacheStats, PersistentCacheState } from "@/types";
 interface CacheDetailsDialogProps {
   open: boolean;
   onClose: () => void;
+  onCacheCleared?: () => void;
 }
 
 type DetailsState =
@@ -18,8 +20,13 @@ type DetailsState =
   | { phase: "ready"; stats: CacheStats }
   | { phase: "error"; message: string };
 
-export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
+export function CacheDetailsDialog({
+  open,
+  onClose,
+  onCacheCleared = () => {},
+}: CacheDetailsDialogProps) {
   const [details, setDetails] = useState<DetailsState>({ phase: "loading" });
+  const [clearing, setClearing] = useState(false);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -48,7 +55,7 @@ export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
         if (cancelled) return;
         setDetails({
           phase: "error",
-          message: toCommandError(error).message,
+          message: `读取缓存详情失败：${toCommandError(error).message}`,
         });
       });
     return () => {
@@ -57,6 +64,31 @@ export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
   }, [open]);
 
   if (!open) return null;
+
+  const handleClear = async () => {
+    if (clearing) return;
+    const label =
+      details.phase === "ready" && details.stats.state === "degraded"
+        ? "重建持久化缓存"
+        : "清除翻译缓存";
+    const confirmed = window.confirm(
+      `确定${label}？\n\n这会删除本机翻译缓存，不会删除设置、Qwen 登录状态或网页对话记录。`,
+    );
+    if (!confirmed) return;
+    setClearing(true);
+    try {
+      const stats = await clearTranslationCache();
+      setDetails({ phase: "ready", stats });
+      onCacheCleared();
+    } catch (error) {
+      setDetails({
+        phase: "error",
+        message: `清除翻译缓存失败：${toCommandError(error).message}`,
+      });
+    } finally {
+      setClearing(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
@@ -89,11 +121,15 @@ export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
           ) : null}
           {details.phase === "error" ? (
             <div className="rounded-lg border border-danger/40 bg-danger/5 px-3 py-3 text-sm text-danger">
-              读取缓存详情失败：{details.message}
+              {details.message}
             </div>
           ) : null}
           {details.phase === "ready" ? (
-            <CacheDetails stats={details.stats} />
+            <CacheDetails
+              stats={details.stats}
+              clearing={clearing}
+              onClear={handleClear}
+            />
           ) : null}
         </div>
       </section>
@@ -101,7 +137,15 @@ export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
   );
 }
 
-function CacheDetails({ stats }: { stats: CacheStats }) {
+function CacheDetails({
+  stats,
+  clearing,
+  onClear,
+}: {
+  stats: CacheStats;
+  clearing: boolean;
+  onClear: () => void;
+}) {
   const state = statePresentation(stats.state);
   return (
     <div className="space-y-3 text-sm">
@@ -127,6 +171,14 @@ function CacheDetails({ stats }: { stats: CacheStats }) {
       <p className="rounded-lg bg-warning/5 px-3 py-2 text-xs text-ink-soft">
         译文以明文保存在本机缓存中；原文不会写入缓存数据库。请仅在可信设备上使用。
       </p>
+      <Button variant="outline" onClick={onClear} disabled={clearing}>
+        {clearing ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+        {clearing
+          ? "正在清除…"
+          : stats.state === "degraded"
+            ? "重建持久化缓存"
+            : "清除翻译缓存"}
+      </Button>
     </div>
   );
 }

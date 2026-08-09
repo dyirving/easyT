@@ -16,3 +16,13 @@ pub async fn get_translation_cache_stats(
         .await
         .map_err(|_| AppError::CacheOperationFailed("无法读取缓存详情".to_string()))
 }
+
+#[tauri::command]
+pub async fn clear_translation_cache(
+    cache: State<'_, Arc<TranslationCache>>,
+) -> AppResult<CacheStatsView> {
+    cache
+        .clear()
+        .await
+        .map_err(|_| AppError::CacheOperationFailed("无法清除翻译缓存".to_string()))
+}

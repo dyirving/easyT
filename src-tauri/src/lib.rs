@@ -10,7 +10,7 @@ mod window_state;
 use std::sync::Arc;
 
 use commands::{
-    cache::get_translation_cache_stats,
+    cache::{clear_translation_cache, get_translation_cache_stats},
     clipboard::copy_translation,
     config::{get_config, save_config, AppState},
     selection::capture_selected_text,
@@ -165,6 +165,7 @@ pub fn run() {
             get_web_login_status,
             logout_web_account,
             get_translation_cache_stats,
+            clear_translation_cache,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

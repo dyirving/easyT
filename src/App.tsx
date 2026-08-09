@@ -166,7 +166,12 @@ export default function App() {
   if (route === "settings") {
     return (
       <div className="h-screen w-screen overflow-hidden bg-surface">
-        <SettingsPage onBack={() => setRoute("translation")} />
+        <SettingsPage
+          onBack={() => setRoute("translation")}
+          onCacheCleared={() =>
+            useTranslationStore.getState().clearCacheSourceNotice()
+          }
+        />
       </div>
     );
   }

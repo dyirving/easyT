@@ -182,6 +182,10 @@ enum CacheCommand {
     Stats {
         reply: oneshot::Sender<Result<CacheStatsView, CacheOperationError>>,
     },
+    Clear {
+        epoch: u64,
+        reply: oneshot::Sender<Result<CacheStatsView, CacheOperationError>>,
+    },
     Shutdown {
         reply: oneshot::Sender<()>,
     },
@@ -384,6 +388,17 @@ impl PersistentCacheWorker {
             .map_err(|_| CacheOperationError::Unavailable)?
     }
 
+    pub async fn clear(&self, epoch: u64) -> Result<CacheStatsView, CacheOperationError> {
+        let (reply, receiver) = oneshot::channel();
+        self.sender
+            .send(CacheCommand::Clear { epoch, reply })
+            .await
+            .map_err(|_| CacheOperationError::Unavailable)?;
+        receiver
+            .await
+            .map_err(|_| CacheOperationError::Unavailable)?
+    }
+
     pub async fn shutdown(&self) {
         if self.state() == PersistentCacheState::Stopped {
             return;
@@ -461,7 +476,7 @@ fn worker_main(
             None
         }
     };
-    let current_epoch = 0u64;
+    let mut current_epoch = 0u64;
     let mut pending_touches = BTreeMap::new();
     let mut pending_stats = StatsDelta::default();
     let mut pending_since: Option<std::time::Instant> = None;
@@ -592,6 +607,29 @@ fn worker_main(
                     pending_since = None;
                     let _ = reply.send(result);
                 }
+                CacheCommand::Clear { epoch, reply } => {
+                    current_epoch = epoch;
+                    pending_touches.clear();
+                    pending_stats = StatsDelta::default();
+                    pending_since = None;
+                    connection.take();
+                    let result = rebuild_empty_database(&data_dir).and_then(|new_connection| {
+                        let path = database_path(&data_dir);
+                        new_connection.execute(
+                            "UPDATE cache_stats SET last_cleared_at_ms = ?1 WHERE id = 1",
+                            [now_ms()],
+                        )?;
+                        let stats = read_stats_view(&new_connection, PersistentCacheState::Ready, &path)?;
+                        connection = Some(new_connection);
+                        state.store(PersistentCacheState::Ready);
+                        Ok(stats)
+                    });
+                    if result.is_err() {
+                        log::warn!("cache_clear_failed: reason=sqlite");
+                        state.store(PersistentCacheState::Degraded);
+                    }
+                    let _ = reply.send(result.map_err(|_| CacheOperationError::Unavailable));
+                }
                 CacheCommand::Shutdown { reply } => {
                     if let Some(connection) = connection.as_mut() {
                         flush_pending_or_record_touch_failure(
@@ -620,6 +658,80 @@ fn worker_main(
 
 fn database_path(data_dir: &Path) -> PathBuf {
     data_dir.join(CACHE_DIR_NAME).join(DATABASE_FILE_NAME)
+}
+
+fn rebuild_empty_database(data_dir: &Path) -> rusqlite::Result<Connection> {
+    remove_cache_database_family(data_dir)?;
+    open_connection(data_dir)
+}
+
+fn remove_cache_database_family(data_dir: &Path) -> rusqlite::Result<()> {
+    let cache_dir = data_dir.join(CACHE_DIR_NAME);
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let cache_dir = std::fs::canonicalize(cache_dir)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+
+    for file_name in [
+        DATABASE_FILE_NAME.to_string(),
+        format!("{DATABASE_FILE_NAME}-wal"),
+        format!("{DATABASE_FILE_NAME}-shm"),
+    ] {
+        remove_validated_cache_file(&cache_dir, &file_name)?;
+    }
+    if let Some(quarantine) = latest_quarantine_database_name(&cache_dir)? {
+        for suffix in ["", "-wal", "-shm"] {
+            remove_validated_cache_file(&cache_dir, &format!("{quarantine}{suffix}"))?;
+        }
+    }
+    Ok(())
+}
+
+fn latest_quarantine_database_name(cache_dir: &Path) -> rusqlite::Result<Option<String>> {
+    let entries = std::fs::read_dir(cache_dir)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let mut latest: Option<(u64, String)> = None;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        let Some(timestamp) = name
+            .strip_prefix("translation_cache.corrupt-")
+            .and_then(|value| value.strip_suffix(".sqlite3"))
+            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            continue;
+        };
+        if latest
+            .as_ref()
+            .map_or(true, |(current, _)| timestamp > *current)
+        {
+            latest = Some((timestamp, name));
+        }
+    }
+    Ok(latest.map(|(_, name)| name))
+}
+
+fn remove_validated_cache_file(cache_dir: &Path, file_name: &str) -> rusqlite::Result<()> {
+    let path = cache_dir.join(file_name);
+    if path.parent() != Some(cache_dir) {
+        return Err(rusqlite::Error::InvalidPath(path));
+    }
+    match std::fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(rusqlite::Error::ToSqlConversionFailure(Box::new(error))),
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis().try_into().unwrap_or(i64::MAX))
+        .unwrap_or_default()
 }
 
 fn open_connection(data_dir: &Path) -> rusqlite::Result<Connection> {

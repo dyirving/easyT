@@ -39,6 +39,7 @@ import {
 
 interface SettingsPageProps {
   onBack: () => void;
+  onCacheCleared?: () => void;
 }
 
 type TestStatus = "idle" | "testing" | "ok" | "fail";
@@ -46,7 +47,7 @@ type TestStatus = "idle" | "testing" | "ok" | "fail";
 /** 登录轮询间隔：仅 SettingsPage 可见且状态为 loggingIn 时启动 */
 const LOGIN_POLL_INTERVAL_MS = 1000;
 
-export function SettingsPage({ onBack }: SettingsPageProps) {
+export function SettingsPage({ onBack, onCacheCleared }: SettingsPageProps) {
   const { config, setConfig, loadConfig, markSaved } = useSettingsStore();
   const [showKey, setShowKey] = useState(false);
   const [testing, setTesting] = useState<TestStatus>("idle");
@@ -501,6 +502,7 @@ export function SettingsPage({ onBack }: SettingsPageProps) {
       <CacheDetailsDialog
         open={cacheDetailsOpen}
         onClose={() => setCacheDetailsOpen(false)}
+        onCacheCleared={onCacheCleared}
       />
     </div>
   );

@@ -137,9 +137,14 @@ impl TranslationCache {
         }
     }
 
-    /// 清空 L1 并推进 epoch，使在途写入失效（清除命令入口由 04 工单接入）。
-    #[allow(dead_code)] // 04：clear_translation_cache 调用
-    pub fn clear_l1(&self) {
+    /// 先原子清空 L1 并推进 epoch，再清空 L2；在途旧 epoch 不得回填。
+    pub async fn clear(&self) -> Result<CacheStatsView, CacheOperationError> {
+        let epoch = self.memory.clear_and_advance_epoch();
+        self.persistent.clear(epoch).await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn clear_l1(&self) {
         self.memory.clear_and_advance_epoch();
     }
 
@@ -288,6 +293,82 @@ mod tests {
         cache.store(&i, &result("你好"), old_epoch);
         let outcome = cache.lookup(&i).await;
         assert_eq!(outcome.status, CacheStatus::Miss);
+    }
+
+    #[tokio::test]
+    async fn clear_removes_both_layers_rejects_in_flight_store_and_preserves_neighbor_files() {
+        let dir = TestDir::new("clear");
+        let cached = input("hello", "zh");
+        let cache = TranslationCache::start(&dir.0);
+        cache.wait_until_persistent_ready().await;
+        let old_epoch = cache.current_epoch();
+        cache.store(&cached, &result("旧译文"), old_epoch);
+        cache
+            .stats()
+            .await
+            .expect("store should be observed before clear");
+
+        std::fs::create_dir_all(&dir.0).expect("test data directory should exist");
+        let neighbor = dir.0.join("must-not-delete.txt");
+        std::fs::write(&neighbor, "keep").expect("neighbor file should be created");
+
+        let cleared = cache.clear().await.expect("clear should succeed");
+        assert_eq!(cleared.entry_count, 0);
+        assert_eq!(cleared.hit_rate, None);
+        assert_eq!(cache.lookup(&cached).await.status, CacheStatus::Miss);
+
+        cache.store(&cached, &result("迟到译文"), old_epoch);
+        let repeated = cache.clear().await.expect("repeated clear should succeed");
+        assert_eq!(repeated.entry_count, 0);
+        assert_eq!(cache.lookup(&cached).await.status, CacheStatus::Miss);
+        assert!(
+            neighbor.exists(),
+            "clear must only remove the cache database family"
+        );
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn clear_removes_only_the_latest_quarantine_group() {
+        let dir = TestDir::new("clear-quarantine");
+        let cache_dir = dir.0.join("cache");
+        std::fs::create_dir_all(&cache_dir).expect("cache directory should be created");
+        let older = "translation_cache.corrupt-100.sqlite3";
+        let latest = "translation_cache.corrupt-200.sqlite3";
+        for name in [older, latest, "translation_cache.corrupt-200.sqlite3-wal"] {
+            std::fs::write(cache_dir.join(name), "fixture")
+                .expect("quarantine fixture should exist");
+        }
+
+        let cache = TranslationCache::start(&dir.0);
+        cache.wait_until_persistent_ready().await;
+        cache.clear().await.expect("clear should succeed");
+
+        assert!(cache_dir.join(older).exists());
+        assert!(!cache_dir.join(latest).exists());
+        assert!(!cache_dir
+            .join("translation_cache.corrupt-200.sqlite3-wal")
+            .exists());
+        cache.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn failed_clear_keeps_l1_empty_and_leaves_new_translations_usable() {
+        let dir = TestDir::new("clear-failure");
+        std::fs::create_dir_all(&dir.0).expect("test root should be created");
+        let invalid_data_dir = dir.0.join("data-file");
+        std::fs::write(&invalid_data_dir, "not a directory").expect("invalid root should exist");
+        let cache = TranslationCache::start(&invalid_data_dir);
+        let input = input("hello", "zh");
+        let old_epoch = cache.current_epoch();
+        cache.store(&input, &result("旧译文"), old_epoch);
+
+        assert!(cache.clear().await.is_err());
+        assert_eq!(cache.lookup(&input).await.status, CacheStatus::Miss);
+
+        cache.store(&input, &result("新译文"), cache.current_epoch());
+        assert_eq!(cache.lookup(&input).await.status, CacheStatus::MemoryHit);
+        cache.shutdown().await;
     }
 
     #[tokio::test]

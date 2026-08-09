@@ -93,13 +93,10 @@ impl TranslationCache {
                 }
                 PersistentLookup::Hit(_)
                 | PersistentLookup::Miss
-                | PersistentLookup::Unavailable => {
-                    let _ = self.persistent.try_record_stats(StatsDelta::miss(), epoch);
-                    CacheLookupOutcome {
-                        status: CacheStatus::Miss,
-                        result: None,
-                    }
-                }
+                | PersistentLookup::Unavailable => CacheLookupOutcome {
+                    status: CacheStatus::Miss,
+                    result: None,
+                },
             },
         }
     }
@@ -160,6 +157,10 @@ impl TranslationCache {
             .try_record_stats(StatsDelta::bypass(), epoch);
     }
 
+    pub(crate) fn record_miss(&self, epoch: u64) {
+        let _ = self.persistent.try_record_stats(StatsDelta::miss(), epoch);
+    }
+
     pub(crate) fn record_refresh(&self, epoch: u64) {
         let _ = self
             .persistent
@@ -170,6 +171,14 @@ impl TranslationCache {
         let _ = self
             .persistent
             .try_record_stats(StatsDelta::oversized_bypass(), epoch);
+    }
+
+    pub(crate) fn result_is_oversized(
+        &self,
+        input: &NormalizedCacheInput,
+        result: &BackendResult,
+    ) -> bool {
+        key::logical_size(input, result) > MAX_ENTRY_LOGICAL_BYTES
     }
 
     #[cfg(test)]
@@ -340,6 +349,7 @@ mod tests {
         first.store(&cached, &result("你好"), first.current_epoch());
         assert_eq!(first.lookup(&cached).await.status, CacheStatus::MemoryHit);
         assert_eq!(first.lookup(&missing).await.status, CacheStatus::Miss);
+        first.record_miss(first.current_epoch());
         first.record_bypass(first.current_epoch());
         first.record_refresh(first.current_epoch());
         first.record_oversized_bypass(first.current_epoch());

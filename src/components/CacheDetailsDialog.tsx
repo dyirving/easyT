@@ -102,9 +102,10 @@ export function CacheDetailsDialog({ open, onClose }: CacheDetailsDialogProps) {
 }
 
 function CacheDetails({ stats }: { stats: CacheStats }) {
+  const state = statePresentation(stats.state);
   return (
     <div className="space-y-3 text-sm">
-      <p className={stateTone(stats.state)}>{stateLabel(stats.state)}</p>
+      <p className={state.tone}>{state.label}</p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 rounded-lg border border-line px-3 py-3">
         <dt className="text-ink-muted">L2 条目</dt>
         <dd className="text-right text-ink">{stats.entryCount} 条</dd>
@@ -134,19 +135,17 @@ function formatMiB(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-function stateLabel(state: PersistentCacheState): string {
+function statePresentation(
+  state: PersistentCacheState,
+): { label: string; tone: string } {
   switch (state) {
     case "starting":
-      return "持久化缓存正在初始化";
+      return { label: "持久化缓存正在初始化", tone: "text-warning" };
     case "ready":
-      return "持久化缓存可用";
+      return { label: "持久化缓存可用", tone: "text-success" };
     case "degraded":
-      return "持久化缓存不可用";
+      return { label: "持久化缓存不可用", tone: "text-warning" };
     case "stopped":
-      return "持久化缓存已停止";
+      return { label: "持久化缓存已停止", tone: "text-warning" };
   }
-}
-
-function stateTone(state: PersistentCacheState): string {
-  return state === "ready" ? "text-success" : "text-warning";
 }

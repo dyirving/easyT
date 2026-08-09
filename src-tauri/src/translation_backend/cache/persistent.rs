@@ -474,11 +474,11 @@ fn worker_main(
                     Ok(command) => command,
                     Err(_) => {
                         if let Some(connection) = connection.as_mut() {
-                            if let Err(error) =
-                                flush_pending(connection, &mut pending_touches, &mut pending_stats)
-                            {
-                                log::warn!("cache_touch_failed: reason=sqlite error={error}");
-                                pending_stats.merge(StatsDelta::touch_failure());
+                            if !flush_pending_or_record_touch_failure(
+                                connection,
+                                &mut pending_touches,
+                                &mut pending_stats,
+                            ) {
                                 pending_since = Some(std::time::Instant::now());
                             } else {
                                 pending_since = None;
@@ -560,13 +560,11 @@ fn worker_main(
                         pending_stats.merge(stats);
                         if pending_touches.len() >= TOUCH_BATCH_KEYS {
                             if let Some(connection) = connection.as_mut() {
-                                if let Err(error) = flush_pending(
+                                if !flush_pending_or_record_touch_failure(
                                     connection,
                                     &mut pending_touches,
                                     &mut pending_stats,
                                 ) {
-                                    log::warn!("cache_touch_failed: reason=sqlite error={error}");
-                                    pending_stats.merge(StatsDelta::touch_failure());
                                     pending_since = Some(std::time::Instant::now());
                                 } else {
                                     pending_since = None;
@@ -596,12 +594,11 @@ fn worker_main(
                 }
                 CacheCommand::Shutdown { reply } => {
                     if let Some(connection) = connection.as_mut() {
-                        if let Err(error) =
-                            flush_pending(connection, &mut pending_touches, &mut pending_stats)
-                        {
-                            log::warn!("cache_touch_failed: reason=sqlite error={error}");
-                            pending_stats.merge(StatsDelta::touch_failure());
-                        }
+                        flush_pending_or_record_touch_failure(
+                            connection,
+                            &mut pending_touches,
+                            &mut pending_stats,
+                        );
                     }
                     connection.take();
                     let _ = reply.send(());
@@ -610,11 +607,11 @@ fn worker_main(
             }
         }
         if let Some(connection) = connection.as_mut() {
-            if let Err(error) = flush_pending(connection, &mut pending_touches, &mut pending_stats)
-            {
-                log::warn!("cache_touch_failed: reason=sqlite error={error}");
-                pending_stats.merge(StatsDelta::touch_failure());
-            }
+            flush_pending_or_record_touch_failure(
+                connection,
+                &mut pending_touches,
+                &mut pending_stats,
+            );
         }
     });
     connection.take();
@@ -931,6 +928,21 @@ fn flush_pending(
     touches.clear();
     *stats = StatsDelta::default();
     Ok(())
+}
+
+fn flush_pending_or_record_touch_failure(
+    connection: &mut Connection,
+    touches: &mut BTreeMap<CacheKey, TouchRecord>,
+    stats: &mut StatsDelta,
+) -> bool {
+    match flush_pending(connection, touches, stats) {
+        Ok(()) => true,
+        Err(error) => {
+            log::warn!("cache_touch_failed: reason=sqlite error={error}");
+            stats.merge(StatsDelta::touch_failure());
+            false
+        }
+    }
 }
 
 fn read_stats_view(

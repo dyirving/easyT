@@ -217,7 +217,8 @@ where
     let epoch = cache.current_epoch();
     match policy {
         CachePolicy::Use => {
-            if !is_definitely_oversized(input) {
+            let input_is_oversized = is_definitely_oversized(input);
+            if !input_is_oversized {
                 let outcome = cache.lookup(input).await;
                 if let Some(result) = outcome.result {
                     return Ok(TranslationOutcome {
@@ -228,9 +229,23 @@ where
             } else {
                 cache.record_oversized_bypass(epoch);
             }
-            let result = fetch.await?;
-            if is_cacheable_result(&result) {
-                cache.store(input, &result, epoch);
+            let result = match fetch.await {
+                Ok(result) => result,
+                Err(error) => {
+                    if !input_is_oversized {
+                        cache.record_miss(epoch);
+                    }
+                    return Err(error);
+                }
+            };
+            let cacheable = is_cacheable_result(&result);
+            if !input_is_oversized && cacheable && cache.result_is_oversized(input, &result) {
+                cache.record_oversized_bypass(epoch);
+            } else if !input_is_oversized {
+                cache.record_miss(epoch);
+                if cacheable {
+                    cache.store(input, &result, epoch);
+                }
             }
             Ok(TranslationOutcome {
                 result,
@@ -270,7 +285,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
-    use crate::translation_backend::cache::{prepare_cache_input, TranslationCache};
+    use crate::translation_backend::cache::{
+        prepare_cache_input, test_support::TestDir, TranslationCache,
+    };
 
     fn sample_result(text: &str) -> BackendResult {
         BackendResult {
@@ -496,6 +513,31 @@ mod tests {
             2,
             "oversized Use must not read L1"
         );
+    }
+
+    #[tokio::test]
+    async fn oversized_network_result_does_not_enter_public_hit_rate() {
+        let dir = TestDir::new("oversized-stats");
+        let cache = TranslationCache::start(&dir.0);
+        cache.wait_until_persistent_ready().await;
+        let input = prepare_cache_input("hello", "简体中文");
+        let oversized =
+            "译".repeat(crate::translation_backend::cache::key::MAX_ENTRY_LOGICAL_BYTES as usize);
+
+        let outcome = run_translation_with_cache(&cache, &input, CachePolicy::Use, async {
+            Ok(sample_result(&oversized))
+        })
+        .await
+        .expect("oversized translation still succeeds");
+
+        assert_eq!(outcome.cache_status, CacheStatus::Miss);
+        let stats = cache.stats().await.expect("stats should be readable");
+        assert_eq!(stats.entry_count, 0);
+        assert_eq!(
+            stats.hit_rate, None,
+            "oversized results must not add a public miss"
+        );
+        cache.shutdown().await;
     }
 
     #[test]

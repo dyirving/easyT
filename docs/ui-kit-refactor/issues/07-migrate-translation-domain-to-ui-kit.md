@@ -1,6 +1,6 @@
 # 07 — 迁移翻译领域到 UI Kit
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Source
 
@@ -18,16 +18,16 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-006
 
 ## Acceptance criteria
 
-- [ ] CacheNotice、ErrorState、LoadingState、MarkdownTranslation、OriginalTextPanel、TranslationHeader、TranslationPanel 及其测试迁入 translation 目录。
-- [ ] `MarkdownTranslation.css` 与组件同目录并显式加载；KaTeX CSS 全仓只有一个明确入口，无重复产物。
-- [ ] `useTranslationController` 集中 store/service 协调、派生状态、普通翻译、强制刷新、重试、复制和固定窗口动作，不复制 store 状态机。
-- [ ] `TranslationPage` 不直接 import store/service/Tauri，只组合 controller 返回的 view state/actions。
-- [ ] 手动输入使用 Textarea；按钮、图标按钮、loading 和状态反馈复用 UI Kit/patterns。
-- [ ] 建立 `src/components/translation/index.ts`；跨目录只经四个目录 seam import，无 translation 深路径 import。
-- [ ] idle、快捷键提示、翻译中、流式输出、未完成译文、普通错误、refresh error、复制、pin、缓存来源和“重新翻译”行为保持。
-- [ ] 缓存来源提示继续与译文 DOM/可复制内容分离。
-- [ ] 原有 TranslationPage、TranslationPanel、MarkdownTranslation、translationStore、translationCoordinator 测试全部保留并通过；新增 controller 空文本、长度上限、forceRefresh、复制/pin 测试。
-- [ ] 新路径通过后删除翻译领域旧文件，不保留旧路径 re-export；typecheck/test/build 通过。
+- [x] CacheNotice、ErrorState、LoadingState、MarkdownTranslation、OriginalTextPanel、TranslationHeader、TranslationPanel 及其测试迁入 translation 目录。
+- [x] `MarkdownTranslation.css` 与组件同目录并显式加载；KaTeX CSS 全仓只有一个明确入口，无重复产物。
+- [x] `useTranslationController` 集中 store/service 协调、派生状态、普通翻译、强制刷新、重试、复制和固定窗口动作，不复制 store 状态机。
+- [x] `TranslationPage` 不直接 import store/service/Tauri，只组合 controller 返回的 view state/actions。
+- [x] 手动输入使用 Textarea；按钮、图标按钮、loading 和状态反馈复用 UI Kit/patterns。
+- [x] 建立 `src/components/translation/index.ts`；跨目录只经四个目录 seam import，无 translation 深路径 import。
+- [x] idle、快捷键提示、翻译中、流式输出、未完成译文、普通错误、refresh error、复制、pin、缓存来源和“重新翻译”行为保持。
+- [x] 缓存来源提示继续与译文 DOM/可复制内容分离。
+- [x] 原有 TranslationPage、TranslationPanel、MarkdownTranslation、translationStore、translationCoordinator 测试全部保留并通过；新增 controller 空文本、长度上限、forceRefresh、复制/pin 测试。
+- [x] 新路径通过后删除翻译领域旧文件，不保留旧路径 re-export；typecheck/test/build 通过。
 
 ## Out of scope
 
@@ -36,3 +36,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-006
 
 ## Comments
 
+- 2026-08-11: 实现与自动验证完成。`npm run typecheck`、`npm test`（58 项）和 `npm run build` 均通过；等待人工验收。

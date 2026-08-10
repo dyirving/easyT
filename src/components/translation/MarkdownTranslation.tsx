@@ -1,6 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkMath from "remark-math";
+import "./MarkdownTranslation.css";
 
 interface MarkdownTranslationProps {
   text: string;

@@ -2,7 +2,7 @@ import { Pin, PinOff, Settings, X, RefreshCw, Copy, Check } from "lucide-react";
 import { IconButton } from "@/components/ui";
 
 const charaLogo = new URL(
-  "../assets/chara_logo_titlebar.png",
+  "../../assets/chara_logo_titlebar.png",
   import.meta.url,
 ).href;
 

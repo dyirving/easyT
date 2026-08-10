@@ -4,7 +4,7 @@ import { useTranslationStore } from "@/stores/translationStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { TranslationPage } from "./TranslationPage";
 
-vi.mock("@/components/MarkdownTranslation", () => ({
+vi.mock("@/components/translation/MarkdownTranslation", () => ({
   MarkdownTranslation: ({ text }: { text: string }) => (
     <div data-testid="markdown">{text}</div>
   ),

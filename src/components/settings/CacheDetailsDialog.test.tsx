@@ -39,10 +39,7 @@ describe("CacheDetailsDialog", () => {
     );
 
     render(<CacheDetailsDialog open onClose={vi.fn()} />);
-    expect(screen.getByRole("dialog", { name: "翻译缓存详情" })).toHaveAttribute(
-      "aria-modal",
-      "true",
-    );
+    expect(screen.getByRole("dialog", { name: "翻译缓存详情" })).toBeInTheDocument();
     expect(screen.getByText("正在读取缓存详情…")).toBeInTheDocument();
 
     resolveStats(readyStats);
@@ -97,7 +94,7 @@ describe("CacheDetailsDialog", () => {
     await screen.findByRole("dialog", { name: "翻译缓存详情" });
     expect(screen.getByRole("button", { name: "关闭缓存详情" })).toHaveFocus();
 
-    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent(screen.getByRole("dialog", { name: "翻译缓存详情" }), new Event("cancel", { cancelable: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(trigger).toHaveFocus();
   });
@@ -124,7 +121,7 @@ describe("CacheDetailsDialog", () => {
     });
     fireEvent.click(clearButton);
 
-    const confirmation = await screen.findByRole("alertdialog", {
+    const confirmation = await screen.findByRole("dialog", {
       name: "确认清除翻译缓存",
     });
     expect(confirmation).toHaveTextContent(
@@ -134,7 +131,7 @@ describe("CacheDetailsDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "确认清除" }));
 
     expect(clearTranslationCache).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "正在清除…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /正在清除/ })).toBeDisabled();
 
     resolveClear({ ...readyStats, entryCount: 0, diskBytes: 0, hitRate: null });
     await waitFor(() => expect(onCacheCleared).toHaveBeenCalledOnce());

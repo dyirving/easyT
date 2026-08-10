@@ -14,7 +14,7 @@ import { TranslationPanel } from "@/components/TranslationPanel";
 import { CacheNotice } from "@/components/CacheNotice";
 import { LoadingState } from "@/components/LoadingState";
 import { ErrorState } from "@/components/ErrorState";
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui";
 
 interface TranslationPageProps {
   onOpenSettings: () => void;

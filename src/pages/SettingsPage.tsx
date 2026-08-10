@@ -22,7 +22,7 @@ import {
 } from "@/services/tauriCommands";
 import { Field } from "@/components/ui/Field";
 import { Input } from "@/components/ui/Input";
-import { Button } from "@/components/ui/Button";
+import { Button } from "@/components/ui";
 import { Switch } from "@/components/ui/Switch";
 import { ShortcutInput } from "@/components/ShortcutInput";
 import { CacheDetailsDialog } from "@/components/CacheDetailsDialog";

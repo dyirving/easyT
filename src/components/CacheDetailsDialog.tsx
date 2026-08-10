@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, X } from "lucide-react";
 
-import { Button } from "@/components/ui/Button";
+import { Button, IconButton } from "@/components/ui";
 import {
   clearTranslationCache,
   getTranslationCacheStats,
@@ -110,14 +110,14 @@ export function CacheDetailsDialog({
           <h2 id="cache-details-title" className="text-base font-semibold text-ink">
             翻译缓存详情
           </h2>
-          <Button
+          <IconButton
             ref={closeButtonRef}
-            size="icon"
-            aria-label="关闭缓存详情"
+            label="关闭缓存详情"
+            size="sm"
             onClick={onClose}
           >
             <X className="h-4 w-4" />
-          </Button>
+          </IconButton>
         </header>
 
         <div className="mt-4">

@@ -1,5 +1,5 @@
 import { Pin, PinOff, Settings, X, RefreshCw, Copy, Check } from "lucide-react";
-import { Button } from "@/components/ui/Button";
+import { IconButton } from "@/components/ui";
 
 const charaLogo = new URL(
   "../assets/chara_logo_titlebar.png",
@@ -45,61 +45,52 @@ export function TranslationHeader({
         />
       </div>
       <div className="flex items-center gap-0.5">
-        <Button
-          variant="ghost"
-          size="icon"
+        <IconButton
+          label={copied ? "已复制" : "复制译文"}
+          size="sm"
           onClick={onCopy}
           disabled={!canCopy}
-          title={copied ? "已复制" : "复制译文"}
-          aria-label={copied ? "已复制" : "复制译文"}
         >
           {copied ? (
             <Check className="h-4 w-4 text-success" />
           ) : (
             <Copy className="h-4 w-4" />
           )}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
+        </IconButton>
+        <IconButton
+          label="重新翻译"
+          size="sm"
           onClick={onRetry}
           disabled={!canRetry}
-          title="重新翻译"
-          aria-label="重新翻译"
         >
           <RefreshCw className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
+        </IconButton>
+        <IconButton
+          label={pinned ? "取消固定" : "固定窗口"}
+          size="sm"
+          pressed={pinned}
           onClick={onTogglePin}
-          title={pinned ? "取消固定" : "固定窗口"}
-          aria-label={pinned ? "取消固定" : "固定窗口"}
         >
           {pinned ? (
             <PinOff className="h-4 w-4 text-accent" />
           ) : (
             <Pin className="h-4 w-4" />
           )}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
+        </IconButton>
+        <IconButton
+          label="打开设置"
+          size="sm"
           onClick={onOpenSettings}
-          title="打开设置"
-          aria-label="打开设置"
         >
           <Settings className="h-4 w-4" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
+        </IconButton>
+        <IconButton
+          label="关闭"
+          size="sm"
           onClick={onClose}
-          title="关闭"
-          aria-label="关闭"
         >
           <X className="h-4 w-4" />
-        </Button>
+        </IconButton>
       </div>
     </div>
   );

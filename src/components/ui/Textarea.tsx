@@ -1,0 +1,8 @@
+import { forwardRef, type TextareaHTMLAttributes } from "react";
+import { cn } from "@/lib/utils";
+import { useFormControlContext } from "./FormField";
+export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<HTMLTextAreaElement>>(({ className, id, "aria-describedby": describedBy, "aria-invalid": invalid, required, ...props }, ref) => {
+  const field = useFormControlContext();
+  return <textarea ref={ref} id={id ?? field?.id} aria-describedby={[describedBy, field?.describedBy].filter(Boolean).join(" ") || undefined} aria-invalid={(invalid ?? field?.invalid) || undefined} aria-required={(required ?? field?.required) || undefined} required={required ?? field?.required} className={cn("min-h-[var(--textarea-min-height)] w-full rounded-control border border-line bg-surface-panel px-3 py-2 text-sm text-ink outline-none transition placeholder:text-ink-muted focus:border-accent focus:ring-1 focus:ring-accent/30 disabled:cursor-not-allowed disabled:opacity-50", className)} {...props} />;
+});
+Textarea.displayName = "Textarea";

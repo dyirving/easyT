@@ -1,29 +1,38 @@
-import { type ReactNode } from "react";
+import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "@/lib/utils";
+import { useFormControlContext } from "./FormField";
 
-interface SwitchProps {
+export interface SwitchProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, "onChange"> {
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
   disabled?: boolean;
+  required?: boolean;
   "aria-label"?: string;
 }
 
 /** 极简开关（shadcn/ui 风格的最小实现，避免引入额外依赖） */
-export function Switch({
+export const Switch = forwardRef<HTMLButtonElement, SwitchProps>(({ 
   checked,
   onCheckedChange,
   disabled,
+  "aria-describedby": describedBy,
+  "aria-invalid": invalid,
+  required,
   ...props
-}: SwitchProps) {
+}, ref) => {
+  const field = useFormControlContext();
   return (
     <button
-      type="button"
+      ref={ref} type="button"
       role="switch"
       aria-checked={checked}
+      aria-describedby={[describedBy, field?.describedBy].filter(Boolean).join(" ") || undefined}
+      aria-invalid={(invalid ?? field?.invalid) || undefined}
+      aria-required={(required ?? field?.required) || undefined}
       disabled={disabled}
       onClick={() => onCheckedChange(!checked)}
       className={cn(
-        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50",
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50",
         checked ? "bg-accent" : "bg-line"
       )}
       {...props}
@@ -36,21 +45,5 @@ export function Switch({
       />
     </button>
   );
-}
-
-interface LabelProps {
-  children: ReactNode;
-  htmlFor?: string;
-  className?: string;
-}
-
-export function Label({ children, htmlFor, className }: LabelProps) {
-  return (
-    <label
-      htmlFor={htmlFor}
-      className={cn("text-sm font-medium text-ink", className)}
-    >
-      {children}
-    </label>
-  );
-}
+});
+Switch.displayName = "Switch";

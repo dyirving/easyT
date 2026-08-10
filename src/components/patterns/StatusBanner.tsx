@@ -1,0 +1,6 @@
+import { AlertCircle, AlertTriangle, CheckCircle2, Info } from "lucide-react";
+import { type ReactNode } from "react";
+import { cn } from "@/lib/utils";
+export interface StatusBannerProps { tone: "info"|"success"|"warning"|"danger"; title?: ReactNode; description: ReactNode; action?: ReactNode; announcement?: "off"|"polite"|"assertive" }
+const styles = { info: "border-accent/40 bg-accent/5 text-accent", success: "border-success/40 bg-success/5 text-success", warning: "border-warning/40 bg-warning/5 text-warning", danger: "border-danger/40 bg-danger/5 text-danger" }; const icons = { info: Info, success: CheckCircle2, warning: AlertTriangle, danger: AlertCircle };
+export function StatusBanner({ tone, title, description, action, announcement = "off" }: StatusBannerProps) { const Icon = icons[tone]; return <div role={announcement === "assertive" ? "alert" : announcement === "polite" ? "status" : undefined} className={cn("flex gap-2 rounded-control border px-3 py-2 text-sm", styles[tone])}><Icon aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0"/><div className="min-w-0 flex-1"><div className="text-ink">{title ? <p className="font-medium">{title}</p> : null}<div className={title ? "mt-1 text-ink-soft" : "text-ink-soft"}>{description}</div></div>{action ? <div className="mt-2">{action}</div> : null}</div></div>; }

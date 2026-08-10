@@ -6,3 +6,4 @@ export { Input, type InputProps } from "./Input";
 export { Textarea } from "./Textarea";
 export { Select } from "./Select";
 export { Switch, type SwitchProps } from "./Switch";
+export { Dialog, type DialogProps } from "./Dialog";

@@ -1,0 +1,47 @@
+:root {
+  /* RGB channels keep Tailwind opacity modifiers available. */
+  --color-surface: 246 245 242;
+  --color-surface-soft: 239 236 230;
+  --color-surface-panel: 255 255 255;
+  --color-ink: 47 49 54;
+  --color-ink-soft: 89 92 99;
+  --color-ink-muted: 138 141 148;
+  --color-line: 227 222 213;
+  --color-accent: 90 125 140;
+  --color-danger: 182 85 60;
+  --color-success: 79 122 82;
+  --color-warning: 138 90 32;
+
+  --radius-compact: 6px;
+  --radius-control: 8px;
+  --radius-surface: 12px;
+  --shadow-soft: 0 6px 24px -8px rgb(60 55 45 / 18%);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", "Microsoft YaHei",
+    "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-size-page-title: 16px;
+  --font-size-body: 14px;
+  --font-size-label: 14px;
+  --font-size-translation: 15px;
+  --font-size-caption: 12px;
+  --font-size-caption-strong: 12px;
+  --line-height-body: 1.5;
+  --line-height-translation: 1.7;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-caption-strong: 500;
+
+  --control-height-sm: 32px;
+  --control-height-md: 36px;
+  --input-min-height: 36px;
+  --textarea-min-height: 80px;
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --switch-thumb-size: 16px;
+
+  --focus-ring-width: 1px;
+  --focus-ring-color: rgb(var(--color-accent) / 30%);
+  --focus-ring-offset: 2px;
+  --scrollbar-thumb: 120 116 108;
+}

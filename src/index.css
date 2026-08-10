@@ -1,40 +1,10 @@
+@import "./styles/tokens.css";
+@import "./styles/base.css";
 @import "katex/dist/katex.min.css";
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@layer base {
-  html,
-  body,
-  #root {
-    height: 100%;
-    margin: 0;
-    padding: 0;
-  }
-
-  body {
-    @apply bg-surface text-ink font-sans antialiased;
-    -webkit-font-smoothing: antialiased;
-    text-rendering: optimizeLegibility;
-  }
-
-  /* 自定义滚动条，保持安静风格 */
-  ::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  ::-webkit-scrollbar-thumb {
-    background-color: rgba(120, 116, 108, 0.28);
-    border-radius: 8px;
-  }
-  ::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(120, 116, 108, 0.45);
-  }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
-}
 
 @layer components {
   /* 通用按钮基础样式 */

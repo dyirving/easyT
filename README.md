@@ -2,7 +2,7 @@
 
 easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览器、PDF 阅读器、Word 等应用中选中文本，通过全局快捷键获取选区并调用大模型翻译，结果会显示在鼠标附近的置顶窗口中。
 
-当前版本为 **2.0.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
+当前版本为 **2.1.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
 
 - **Official API**：调用 OpenAI-compatible Chat Completions API，支持多个内置供应商及自定义接口。
 - **Qwen 网页实验模式**：登录 Qwen 网页账号后，使用网页登录态调用 Qwen 私有接口，无需填写 API Key。
@@ -23,6 +23,8 @@ easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览�
 - 支持简体中文、繁體中文、English、日本語四种目标语言
 - 译文支持 Markdown、行内公式和块级公式渲染
 - 支持复制译文、重试翻译、窗口固定和失焦自动隐藏
+- 内置两级本机翻译缓存：L1 内存 LRU 加速当前会话，L2 SQLite 缓存可跨启动复用
+- 缓存命中会明确提示来源；可在设置页查看缓存详情、清除或重建持久化缓存
 - 关闭主窗口后驻留系统托盘，窗口尺寸会自动保存
 - 修改全局快捷键后立即生效，无需重启
 - 区分鉴权、限流、超时、登录过期、协议变化等错误并提供提示
@@ -44,7 +46,7 @@ easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览�
 
 ## 安装
 
-从项目 [Releases](../../releases) 下载 2.0.0 或更新版本：
+从项目 [Releases](../../releases) 下载 2.1.0 或更新版本：
 
 - `easyT_{version}_x64-setup.exe`：NSIS 安装程序（**推荐**）
 - `easyT_{version}_x64_en-US.msi`：MSI 安装包
@@ -113,6 +115,19 @@ Official API 是默认模式。内置供应商会自动填写 Base URL，并提�
 - 不会在失败时自动调用付费 Official API。
 - 流式输出期间只展示正文，不展示模型思考内容；中途失败时会保留并标记未完成译文，但不能复制。
 
+## 翻译缓存
+
+easyT 会自动缓存完整、非空且不超过 1 MiB 的翻译结果；不需要额外开关或配置。
+
+- **普通翻译：**按 L1 内存缓存 → L2 本机 SQLite 缓存 → 翻译后端查询。命中缓存时不会发起新的网络翻译请求。
+- **重新翻译：**绕过缓存读取，使用当前模型重新请求；成功后覆盖共享缓存。
+- **共享与隔离：**不同模型、供应商和账号共享同一缓存；目标语言以及缓存键/prompt 版本不同则不会命中。
+- **不缓存的场景：**Qwen“保存到 Qwen 对话记录”开启时、测试连接、诊断请求、流式未完成结果、失败结果和超限结果。
+- **容量：**L1 上限为 10 MiB/1,024 条；L2 上限为 256 MiB/50,000 条，达到上限后按 LRU 回收。
+- **管理：**设置页的“翻译缓存”可查看条目数、磁盘占用、命中率和路径，并可清除或重建 L2。清除不会删除应用设置、Qwen 登录状态或网页对话记录。
+
+L2 不可用时，easyT 会进入持久化缓存降级状态：已有 L1 仍可命中，未命中请求直接走翻译后端，新的成功结果仍可写入 L1。用户可重建 L2，或在下次启动时让应用再次尝试打开原缓存。
+
 ## 配置项
 
 | 配置项 | 说明 | 默认值 |
@@ -131,6 +146,8 @@ Official API 是默认模式。内置供应商会自动填写 Base URL，并提�
 | 默认常驻窗口 | 启动后默认固定翻译窗口 | 关闭 |
 | 保存到 Qwen 对话记录 | 仅影响 Qwen 网页实验模式 | 关闭 |
 
+翻译缓存始终启用，不提供容量、TTL 或分模型开关；请通过“查看缓存详情”查看或清除本机缓存。
+
 快捷键格式示例：`Ctrl+T`、`Alt+Shift+D`、`Ctrl+Shift+T`。
 
 ## 本地数据与安全
@@ -146,6 +163,8 @@ easyT_Data/
 │   └── qwen/
 │       ├── credentials.bin
 │       └── profile/
+├── cache/
+│   └── translation_cache.sqlite3
 └── logs/                 # 仅开发构建
 ```
 
@@ -154,6 +173,8 @@ easyT_Data/
 - Official API Key 保存在本地 `config.json` 中，不会写入应用日志。
 - Qwen 登录凭证以明文保存在 `web_gateway/qwen/credentials.bin` 中，不会写入 `config.json` 或日志。
 - Qwen 请求期间使用的凭证内存副本会在释放时清理，但本地凭证文件本身未加密。
+- 翻译缓存保存完整译文及其来源元数据；原文不会写入 SQLite。缓存内容为本机明文数据，请仅在可信设备上使用。
+- 清除翻译缓存会删除主库、WAL/SHM 与隔离文件，但不是存储介质安全擦除。
 - 点击“退出登录”会删除 Qwen 凭证和专用浏览器 profile。
 - 请勿在公共、共享或不可信设备上配置真实 API Key 或登录 Qwen。
 
@@ -181,6 +202,13 @@ npm run build
 
 # Rust 测试
 cargo test --manifest-path src-tauri/Cargo.toml
+
+# 前端测试
+npm test
+
+# Rust 格式与静态检查
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
 ## 打包
@@ -197,9 +225,9 @@ src-tauri/target/release/
 ├── easyt.exe
 └── bundle/
     ├── msi/
-    │   └── easyT_2.0.0_x64_en-US.msi
+    │   └── easyT_2.1.0_x64_en-US.msi
     └── nsis/
-        └── easyT_2.0.0_x64-setup.exe
+        └── easyT_2.1.0_x64-setup.exe
 ```
 
 ## 技术栈
@@ -215,6 +243,7 @@ src-tauri/target/release/
 | 剪贴板 | tauri-plugin-clipboard-manager 2 |
 | 按键模拟 | enigo 0.2 |
 | HTTP 与流式响应 | reqwest 0.12、futures-util、SSE |
+| 翻译缓存 | BLAKE3、lru、rusqlite bundled SQLite |
 | Windows API | windows-sys 0.59 |
 | 后端 | Rust、Tokio |
 

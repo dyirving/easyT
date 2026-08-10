@@ -666,17 +666,10 @@ function WebGatewayPanel({
   return (
     <div className="space-y-4 rounded-lg border border-warning/40 bg-warning/5 px-3 py-3">
       {/* 实验功能警告 */}
-      <div className="flex items-start gap-2">
-        <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
-        <div className="text-xs text-ink-soft">
-          <p className="font-medium text-warning">实验功能</p>
-          <p className="mt-0.5">
-            Qwen 网页模式使用网页登录态调用 Qwen 私有接口。可能因 Qwen
-            协议变化而失效；不会自动回退到付费 Official API。登录凭证会以明文保存在
-            easyT_Data 目录，请仅在可信设备上使用。
-          </p>
+        <div className="flex items-start gap-2">
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
+          <p className="text-xs font-medium text-warning">实验功能</p>
         </div>
-      </div>
 
       <Field
         label="Qwen 模型"

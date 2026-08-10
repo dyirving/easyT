@@ -39,3 +39,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-010
 ## Comments
 
 - 2026-08-11: 自动清理与验证完成，证据见 [release-verification.md](../release-verification.md)。视觉比较、Windows release 与人工无障碍检查仍待发布负责人确认；工单保持 `ready-for-human`。
+- 2026-08-11: 根据最终验收反馈修复 Qwen 实验区域分组、登录状态文案/重新登录动作，以及窄宽度缓存详情按钮换行问题；类型检查、相关测试与前端构建通过。

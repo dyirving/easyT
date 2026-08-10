@@ -36,4 +36,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-006
 
 ## Comments
 
-- 2026-08-11: 实现与自动验证完成。`npm run typecheck`、`npm test`（58 项）和 `npm run build` 均通过；等待人工验收。
+- 2026-08-11: 实现、复核修正与自动验证完成。`npm run typecheck`、`npm test`（59 项）和 `npm run build` 均通过；等待人工验收。

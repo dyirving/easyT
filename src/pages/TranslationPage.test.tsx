@@ -4,12 +4,6 @@ import { useTranslationStore } from "@/stores/translationStore";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { TranslationPage } from "./TranslationPage";
 
-vi.mock("@/components/translation/MarkdownTranslation", () => ({
-  MarkdownTranslation: ({ text }: { text: string }) => (
-    <div data-testid="markdown">{text}</div>
-  ),
-}));
-
 vi.mock("@/services/translationRunner", () => ({
   runTranslationRequest: vi.fn(),
 }));
@@ -47,7 +41,7 @@ describe("TranslationPage copy state", () => {
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
 
     expect(screen.getByRole("button", { name: "复制译文" })).toBeEnabled();
-    expect(await screen.findByTestId("markdown")).toHaveTextContent("complete");
+    expect(await screen.findByText("complete")).toBeInTheDocument();
   });
 });
 
@@ -172,9 +166,7 @@ describe("TranslationPage refresh intent", () => {
     expect(
       screen.getByText(/此译文来自本机缓存，点击“重新翻译”/),
     ).toBeInTheDocument();
-    expect(await screen.findByTestId("markdown")).toHaveTextContent(
-      "缓存译文",
-    );
+    expect(await screen.findByText("缓存译文")).toBeInTheDocument();
   });
 
   it("failed refresh keeps the cached text and shows the refresh error", async () => {
@@ -197,9 +189,7 @@ describe("TranslationPage refresh intent", () => {
     expect(
       screen.getByText(/重新翻译失败，当前仍显示此前的本机缓存译文/),
     ).toBeInTheDocument();
-    expect(await screen.findByTestId("markdown")).toHaveTextContent(
-      "缓存译文",
-    );
+    expect(await screen.findByText("缓存译文")).toBeInTheDocument();
   });
 
   it("cached success shows the cache notice between original and translation", async () => {
@@ -216,8 +206,6 @@ describe("TranslationPage refresh intent", () => {
     expect(
       screen.getByText(/此译文来自本机缓存，点击“重新翻译”/),
     ).toBeInTheDocument();
-    expect(await screen.findByTestId("markdown")).toHaveTextContent(
-      "缓存译文",
-    );
+    expect(await screen.findByText("缓存译文")).toBeInTheDocument();
   });
 });

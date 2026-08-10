@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Spinner } from "@/components/ui";
 
 interface LoadingStateProps {
   message?: string;
@@ -29,7 +29,7 @@ export function LoadingState({
 
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-8 text-ink-muted">
-      <Loader2 className="h-5 w-5 animate-spin text-accent" />
+      <Spinner size="md" className="text-accent" />
       <p className="text-sm">{message}</p>
       {showSlowHint ? (
         <p className="text-xs text-ink-muted">

@@ -1,5 +1,5 @@
 import { act, renderHook } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
 import { copyTranslation, setWindowPinned } from "@/services/tauriCommands";
@@ -18,13 +18,18 @@ const mockedSetPinned = vi.mocked(setWindowPinned);
 const mockedRun = vi.mocked(runTranslationRequest);
 
 describe("useTranslationController", () => {
+  let consoleWarn: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     useTranslationStore.getState().reset();
     useSettingsStore.getState().resetToDefault();
     mockedCopy.mockReset().mockResolvedValue(undefined);
     mockedSetPinned.mockReset().mockResolvedValue(undefined);
     mockedRun.mockReset().mockResolvedValue(undefined);
+    consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
+
+  afterEach(() => consoleWarn.mockRestore());
 
   it("rejects empty text before invoking the translation runner", async () => {
     const { result } = renderHook(() => useTranslationController());
@@ -71,6 +76,24 @@ describe("useTranslationController", () => {
 
     expect(mockedCopy).toHaveBeenCalledWith("译文");
     expect(result.current.copied).toBe(true);
+  });
+
+  it("handles unavailable browser clipboard safely after native copy fails", async () => {
+    mockedCopy.mockRejectedValueOnce(new Error("native clipboard unavailable"));
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+    const requestId = useTranslationStore.getState().startRequest("source");
+    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false });
+    const { result } = renderHook(() => useTranslationController());
+
+    try {
+      await act(() => result.current.copy());
+
+      expect(result.current.copied).toBe(false);
+      expect(consoleWarn).toHaveBeenCalled();
+    } finally {
+      if (clipboard) Object.defineProperty(navigator, "clipboard", clipboard);
+    }
   });
 
   it("synchronizes pin changes to the native window command", () => {

@@ -7,6 +7,7 @@ import {
   TranslationPanel,
   useTranslationController,
 } from "@/components/translation";
+import { StatusBanner } from "@/components/patterns";
 import { Button, Spinner, Textarea } from "@/components/ui";
 
 interface TranslationPageProps {
@@ -87,7 +88,7 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
           <div className="space-y-3">
             <OriginalTextPanel text={originalText} />
             {fromCache ? <CacheNotice /> : null}
-            {refreshErrorMessage ? <div role="alert" className="rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger">重新翻译失败，当前仍显示此前的本机缓存译文。{refreshErrorMessage}</div> : null}
+            {refreshErrorMessage ? <StatusBanner tone="danger" announcement="assertive" description={<>重新翻译失败，当前仍显示此前的本机缓存译文。{refreshErrorMessage}</>} /> : null}
             <TranslationPanel text={translatedText} mode="complete" />
           </div>
         ) : null}

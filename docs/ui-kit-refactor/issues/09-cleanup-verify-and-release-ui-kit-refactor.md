@@ -38,3 +38,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-010
 
 ## Comments
 
+- 2026-08-11: 自动清理与验证完成，证据见 [release-verification.md](../release-verification.md)。视觉比较、Windows release 与人工无障碍检查仍待发布负责人确认；工单保持 `ready-for-human`。

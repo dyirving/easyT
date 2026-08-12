@@ -15,6 +15,7 @@ pub struct TranslationResult {
     pub from_cache: bool,
     /// 正式翻译请求的 Rust 单调时钟总耗时
     pub total_elapsed_ms: u64,
+    pub history: crate::translation_history::HistoryCommitOutcome,
 }
 
 #[cfg(test)]
@@ -27,6 +28,9 @@ mod tests {
             translated_text: "你好".to_string(),
             from_cache: false,
             total_elapsed_ms: 42,
+            history: crate::translation_history::HistoryCommitOutcome::NotSaved {
+                warning: crate::translation_history::HistoryWarning::save_failed(),
+            },
         };
 
         let json = serde_json::to_string(&result).expect("result should serialize");

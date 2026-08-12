@@ -8,10 +8,24 @@ import {
   toCommandError,
 } from "@/services/tauriCommands";
 import { runTranslationRequest } from "@/services/translationRunner";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 
 type RouteSetter = (route: "translation") => void;
 
 let captureQueue: Promise<void> = Promise.resolve();
+let pendingCaptureCount = 0;
+
+function markCaptureStarted() {
+  pendingCaptureCount += 1;
+  useTranslationHistoryStore.getState().setCapturePending(true);
+}
+
+function markCaptureFinished() {
+  pendingCaptureCount = Math.max(0, pendingCaptureCount - 1);
+  useTranslationHistoryStore
+    .getState()
+    .setCapturePending(pendingCaptureCount > 0);
+}
 
 /** 显示并聚焦翻译窗口；失败只记录 warning，不阻断后续流程 */
 async function showAndFocusWindow() {
@@ -36,6 +50,7 @@ async function translateCapturedText(
   config: AppConfig,
   setRoute: RouteSetter,
 ) {
+  useTranslationHistoryStore.getState().prepareForNewRequest();
   const requestId = useTranslationStore.getState().startRequest(text);
   setRoute("translation");
 
@@ -60,6 +75,7 @@ async function handleCaptureResult(
   try {
     text = await capture;
   } catch (e) {
+    markCaptureFinished();
     const err = toCommandError(e);
     if (err.kind !== ERROR_KIND.NoSelectedText) {
       useTranslationStore.getState().failCapture(err.message, err.kind);
@@ -67,12 +83,18 @@ async function handleCaptureResult(
     await restoreTranslationWindow(setRoute);
     return;
   }
+  markCaptureFinished();
   await translateCapturedText(text, config, setRoute);
 }
 
 export function startShortcutTranslation(setRoute: RouteSetter) {
+  if (useTranslationHistoryStore.getState().initialization === "loading") {
+    setRoute("translation");
+    return;
+  }
   // 固定请求启动时的配置，捕获选区期间的设置修改只影响下一请求。
   const requestConfig = { ...useSettingsStore.getState().config };
+  markCaptureStarted();
 
   const capture = captureQueue
     .catch(() => {

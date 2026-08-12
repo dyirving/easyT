@@ -23,7 +23,70 @@ export type TranslationPhase =
   | "preparingRequest"
   | "connectingBackend"
   | "waitingForContent"
-  | "receivingContent";
+  | "receivingContent"
+  | "savingHistory";
+
+export type HistoryWarningKind =
+  | "storageUnavailable"
+  | "storageRecovered"
+  | "saveFailed"
+  | "saveTimedOut"
+  | "entryTooLarge"
+  | "limitApplyFailed";
+
+export interface HistoryWarning {
+  kind: HistoryWarningKind;
+  message: string;
+}
+
+export interface TranslationHistorySummary {
+  entryId: string;
+  originalSummary: string;
+  translatedSummary: string;
+  targetLanguage: string;
+  sourceBackend: BackendMode;
+  sourceProvider: string;
+  sourceModel: string;
+  fromCache: boolean;
+  totalElapsedMs: number;
+  completedAtUtcMs: number;
+}
+
+export interface TranslationHistoryEntry extends TranslationHistorySummary {
+  originalText: string;
+  translatedText: string;
+}
+
+export type HistoryInitState = "ready" | "recovered" | "unavailable";
+
+export interface HistorySnapshot {
+  state: HistoryInitState;
+  limit: number;
+  summaries: TranslationHistorySummary[];
+  warning?: HistoryWarning;
+}
+
+export type HistoryCommitOutcome =
+  | {
+      status: "saved";
+      summary: TranslationHistorySummary;
+      replacedEntryId?: string;
+      evictedEntryIds: string[];
+    }
+  | { status: "notSaved"; warning: HistoryWarning };
+
+export type HistoryLimitUpdate =
+  | {
+      status: "applied";
+      summaries: TranslationHistorySummary[];
+      evictedEntryIds: string[];
+    }
+  | { status: "warning"; warning: HistoryWarning };
+
+export interface SaveConfigResult {
+  historyLimit: number;
+  historyUpdate: HistoryLimitUpdate;
+}
 
 export interface TranslationProgressBackend {
   mode: BackendMode;
@@ -294,6 +357,8 @@ export interface AppConfig {
   autoHide: boolean;
   pinnedByDefault: boolean;
   maxTextLength: number;
+  /** 持久化翻译历史总记录数上限，范围 1～20。 */
+  translationHistoryLimit: number;
   /** 翻译后端选择；旧配置缺失时默认 officialApi */
   backendMode: BackendMode;
   /** WebGateway 实验功能配置；旧配置缺失时默认 Qwen + Qwen3.7-Max */
@@ -322,6 +387,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   autoHide: true,
   pinnedByDefault: false,
   maxTextLength: 5000,
+  translationHistoryLimit: 5,
   backendMode: "officialApi",
   webGateway: {
     provider: "qwen",
@@ -347,6 +413,7 @@ export const ERROR_KIND = {
   ApiResponseInvalid: "ApiResponseInvalid",
   WindowError: "WindowError",
   CacheOperationFailed: "CacheOperationFailed",
+  HistoryOperationFailed: "HistoryOperationFailed",
   // ===== Backend 错误（来自 TranslationBackend）=====
   /** WebGateway 模式下本地无可用凭证，需要用户先登录 */
   LoginRequired: "LoginRequired",

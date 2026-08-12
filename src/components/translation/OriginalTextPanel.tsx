@@ -1,11 +1,15 @@
 interface OriginalTextPanelProps {
   text: string;
+  bare?: boolean;
 }
 
 /** 原文区域，颜色更弱，突出译文 */
-export function OriginalTextPanel({ text }: OriginalTextPanelProps) {
+export function OriginalTextPanel({ text, bare = false }: OriginalTextPanelProps) {
   if (!text) {
     return null;
+  }
+  if (bare) {
+    return <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-ink-soft">{text}</p>;
   }
   return (
     <div className="rounded-lg bg-surface-soft/60 px-3 py-2.5">

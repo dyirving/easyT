@@ -15,6 +15,7 @@ pub enum TranslationPhase {
     ConnectingBackend,
     WaitingForContent,
     ReceivingContent,
+    SavingHistory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -133,7 +134,13 @@ fn is_valid_transition(current: Option<TranslationPhase>, next: TranslationPhase
             TranslationPhase::ConnectingBackend | TranslationPhase::WaitingForContent
         ) | (
             Some(TranslationPhase::WaitingForContent),
-            TranslationPhase::ReceivingContent
+            TranslationPhase::ReceivingContent | TranslationPhase::SavingHistory
+        ) | (
+            Some(TranslationPhase::ReceivingContent),
+            TranslationPhase::SavingHistory
+        ) | (
+            Some(TranslationPhase::CheckingCache),
+            TranslationPhase::SavingHistory
         )
     )
 }
@@ -210,5 +217,37 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![1, 2, 3, 4]
         );
+    }
+
+    #[test]
+    fn saving_history_is_a_real_terminal_phase_for_cache_and_network_success() {
+        for phases in [
+            vec![
+                TranslationPhase::CheckingCache,
+                TranslationPhase::SavingHistory,
+            ],
+            vec![
+                TranslationPhase::PreparingRequest,
+                TranslationPhase::ConnectingBackend,
+                TranslationPhase::WaitingForContent,
+                TranslationPhase::ReceivingContent,
+                TranslationPhase::SavingHistory,
+            ],
+        ] {
+            let sink = Arc::new(RecordingSink::default());
+            let reporter = TranslationProgressReporter::new(sink.clone());
+            for phase in &phases {
+                reporter.phase(*phase, None);
+            }
+            assert_eq!(
+                sink.phases
+                    .lock()
+                    .expect("phase lock")
+                    .iter()
+                    .map(|event| event.phase)
+                    .collect::<Vec<_>>(),
+                phases
+            );
+        }
     }
 }

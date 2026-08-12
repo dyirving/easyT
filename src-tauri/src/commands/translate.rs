@@ -1,5 +1,9 @@
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
+use std::time::Instant;
 
 use crate::app_error::{AppError, AppResult};
 use crate::commands::config::AppState;
@@ -7,12 +11,17 @@ use crate::translation_backend::{
     BackendMode, BackendRequest, PhaseProgress, ProgressBackendSource, TranslationBackend,
     TranslationOptions, TranslationPhase, TranslationProgress, TranslationProgressReporter,
 };
+use crate::translation_history::{
+    HistoryCommitEligibility, HistoryCommitOutcome, HistoryEntryDraft, RequestEligibility,
+    TranslationHistory,
+};
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
 
 struct ActiveTranslation {
     generation: u64,
     abort_handle: tokio::task::AbortHandle,
+    current: Arc<AtomicBool>,
 }
 
 #[derive(Default)]
@@ -108,11 +117,15 @@ impl TranslationRequestManager {
         }
     }
 
-    async fn run_latest<F, T>(&self, future: F) -> AppResult<T>
+    async fn run_latest<F, Fut, T>(&self, factory: F) -> AppResult<T>
     where
-        F: Future<Output = AppResult<T>> + Send + 'static,
+        F: FnOnce(RequestEligibility) -> Fut,
+        Fut: Future<Output = AppResult<T>> + Send + 'static,
         T: Send + 'static,
     {
+        let current = Arc::new(AtomicBool::new(true));
+        let eligibility = RequestEligibility::new(Arc::clone(&current));
+        let future = factory(eligibility);
         let task = tokio::spawn(future);
         let generation = {
             let mut state = match self.state.lock() {
@@ -127,7 +140,9 @@ impl TranslationRequestManager {
             if let Some(previous) = state.active.replace(ActiveTranslation {
                 generation,
                 abort_handle: task.abort_handle(),
+                current,
             }) {
+                previous.current.store(false, Ordering::Release);
                 previous.abort_handle.abort();
             }
             generation
@@ -140,7 +155,9 @@ impl TranslationRequestManager {
                 .as_ref()
                 .is_some_and(|active| active.generation == generation)
             {
-                state.active = None;
+                if let Some(active) = state.active.take() {
+                    active.current.store(false, Ordering::Release);
+                }
             }
         }
 
@@ -167,15 +184,23 @@ pub async fn translate_text(
     state: State<'_, AppState>,
     request_manager: State<'_, TranslationRequestManager>,
     backend: State<'_, Arc<TranslationBackend>>,
+    history: State<'_, Arc<TranslationHistory>>,
     request_id: String,
     text: String,
     target_language: String,
     force_refresh: bool,
+    replace_entry_id: Option<String>,
     on_event: Channel<TranslationProgressEvent>,
 ) -> Result<crate::llm::models::TranslationResult, TranslationCommandError> {
     if request_id.trim().is_empty() {
         return Err(TranslationCommandError::from_app(
             AppError::ConfigInvalid("请求 ID 不能为空".to_string()),
+            None,
+        ));
+    }
+    if replace_entry_id.is_some() && !force_refresh {
+        return Err(TranslationCommandError::from_app(
+            AppError::ConfigInvalid("历史替换只能用于重新翻译".to_string()),
             None,
         ));
     }
@@ -186,8 +211,8 @@ pub async fn translate_text(
         .map_err(|error| TranslationCommandError::from_app(error, None))?;
 
     let request = BackendRequest {
-        text,
-        target_language,
+        text: text.clone(),
+        target_language: target_language.clone(),
     };
     let options = TranslationOptions { force_refresh };
     let sink: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
@@ -199,29 +224,60 @@ pub async fn translate_text(
 
     // 提取 Arc<TranslationBackend>，避免 State 的非静态生命周期逃逸到 run_latest 中。
     let backend = backend.inner().clone();
-    let outcome = request_manager
-        .run_latest(async move {
-            backend
+    let history = history.inner().clone();
+    let request_started_at = Instant::now();
+    let timing_for_task = Arc::clone(&timing);
+    let result = request_manager
+        .run_latest(move |request_eligibility| async move {
+            let outcome = backend
                 .translate(&config, request, options, progress)
                 .await
-                .map_err(AppError::from)
+                .map_err(AppError::from)?;
+            if !request_eligibility.is_current() {
+                return Err(AppError::BackendCancelled);
+            }
+            timing_for_task.phase(TranslationPhase::SavingHistory, None);
+            let from_cache = outcome.is_from_cache();
+            let draft = HistoryEntryDraft::new(
+                text,
+                outcome.result.translated_text.clone(),
+                target_language,
+                outcome.result.source.clone(),
+                from_cache,
+                request_started_at,
+            );
+            let history_outcome = history
+                .commit_entry(
+                    draft,
+                    replace_entry_id,
+                    config.translation_history_limit,
+                    HistoryCommitEligibility::new(request_eligibility),
+                )
+                .await;
+            Ok(translate_outcome_to_result(
+                outcome,
+                timing_for_task.elapsed_ms(),
+                history_outcome,
+            ))
         })
         .await
         .map_err(|error| TranslationCommandError::from_app(error, Some(timing.elapsed_ms())))?;
 
-    Ok(translate_outcome_to_result(outcome, timing.elapsed_ms()))
+    Ok(result)
 }
 
 /// 把统一 outcome 映射为前端命令结果；只有 L1/L2 命中时 fromCache 为 true。
 fn translate_outcome_to_result(
     outcome: crate::translation_backend::TranslationOutcome,
     total_elapsed_ms: u64,
+    history: HistoryCommitOutcome,
 ) -> crate::llm::models::TranslationResult {
     let from_cache = outcome.is_from_cache();
     crate::llm::models::TranslationResult {
         translated_text: outcome.result.translated_text,
         from_cache,
         total_elapsed_ms,
+        history,
     }
 }
 
@@ -306,7 +362,7 @@ mod tests {
             let first_manager = Arc::clone(&manager);
             let first = tokio::spawn(async move {
                 first_manager
-                    .run_latest::<_, ()>(async {
+                    .run_latest::<_, _, ()>(|_| async {
                         pending::<()>().await;
                         unreachable!("pending translation must be cancelled")
                     })
@@ -315,7 +371,7 @@ mod tests {
             tokio::task::yield_now().await;
 
             let second = manager
-                .run_latest(async { Ok::<_, AppError>("最新结果".to_string()) })
+                .run_latest(|_| async { Ok::<_, AppError>("最新结果".to_string()) })
                 .await
                 .expect("latest translation should complete");
 
@@ -378,7 +434,13 @@ mod tests {
             cache_status: CacheStatus::Miss,
         };
 
-        let result = super::translate_outcome_to_result(outcome, 37);
+        let result = super::translate_outcome_to_result(
+            outcome,
+            37,
+            crate::translation_history::HistoryCommitOutcome::NotSaved {
+                warning: crate::translation_history::HistoryWarning::save_failed(),
+            },
+        );
         let json = serde_json::to_value(&result).expect("result should serialize");
 
         assert_eq!(json["translatedText"], "你好");

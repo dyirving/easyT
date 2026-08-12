@@ -4,6 +4,7 @@ import {
   useTranslationStore,
 } from "@/stores/translationStore";
 import { toCommandError, translateText } from "@/services/tauriCommands";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 
 /**
  * 执行已启动的请求，并统一处理增量、终态和未完成译文。
@@ -14,6 +15,7 @@ export async function runTranslationRequest(
   text: string,
   config: AppConfig,
   forceRefresh = false,
+  replaceEntryId?: string,
 ) {
   const deltaBuffer = config.streamOutput
     ? createTranslationDeltaBuffer(requestId)
@@ -25,12 +27,26 @@ export async function runTranslationRequest(
       text,
       targetLanguage: config.targetLanguage,
       forceRefresh,
+      replaceEntryId,
       onPhaseChanged: (event) =>
         useTranslationStore.getState().applyProgressPhase(requestId, event),
       onContentDelta: deltaBuffer?.append,
     });
     deltaBuffer?.flush();
-    useTranslationStore.getState().succeedRequest(requestId, result);
+    if (result.history.status === "saved") {
+      useTranslationHistoryStore.getState().applySavedCommit(
+        result.history.summary,
+        text,
+        result.translatedText,
+        result.history.replacedEntryId,
+        result.history.evictedEntryIds,
+      );
+      useTranslationStore.getState().finishPersistedRequest(requestId);
+    } else {
+      useTranslationStore
+        .getState()
+        .succeedTemporaryRequest(requestId, result, result.history.warning);
+    }
   } catch (error) {
     deltaBuffer?.flush();
     const commandError = toCommandError(error);

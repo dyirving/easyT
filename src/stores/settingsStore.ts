@@ -29,6 +29,12 @@ function migrateConfig(input: AppConfig): AppConfig {
     ...input,
     apiKeys: { ...input.apiKeys },
     streamOutput: input.streamOutput ?? false,
+    translationHistoryLimit:
+      Number.isInteger(input.translationHistoryLimit) &&
+      input.translationHistoryLimit >= 1 &&
+      input.translationHistoryLimit <= 20
+        ? input.translationHistoryLimit
+        : 5,
   };
   if (!config.apiKeys || Object.keys(config.apiKeys).length === 0) {
     if (config.apiKey) {

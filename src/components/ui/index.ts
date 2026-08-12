@@ -7,3 +7,9 @@ export { Textarea } from "./Textarea";
 export { Select } from "./Select";
 export { Switch, type SwitchProps } from "./Switch";
 export { Dialog, type DialogProps } from "./Dialog";
+export {
+  Combobox,
+  type ComboboxOption,
+  type ComboboxProps,
+} from "./Combobox";
+export { Collapsible, type CollapsibleProps } from "./Collapsible";

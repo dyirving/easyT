@@ -65,16 +65,25 @@ pub fn load_config() -> AppResult<AppConfig> {
 }
 
 fn normalize_config(mut config: AppConfig) -> (AppConfig, bool) {
-    if QWEN_ALLOWED_MODELS.contains(&config.web_gateway.model.as_str()) {
-        return (config, false);
+    let mut changed = false;
+    if !(1..=20).contains(&config.translation_history_limit) {
+        log::info!(
+            "已保存的翻译历史上限无效，运行时回退默认值: old={}",
+            config.translation_history_limit
+        );
+        config.translation_history_limit = default_config().translation_history_limit;
+        // 历史上限只做运行时兜底；等用户下一次显式保存设置时再写回，
+        // 避免仅因读取旧配置就改写磁盘。
     }
-
-    log::info!(
-        "已保存的 Qwen 模型不再受支持，迁移到官网默认模型: old={}",
-        config.web_gateway.model
-    );
-    config.web_gateway.model = default_config().web_gateway.model;
-    (config, true)
+    if !QWEN_ALLOWED_MODELS.contains(&config.web_gateway.model.as_str()) {
+        log::info!(
+            "已保存的 Qwen 模型不再受支持，迁移到官网默认模型: old={}",
+            config.web_gateway.model
+        );
+        config.web_gateway.model = default_config().web_gateway.model;
+        changed = true;
+    }
+    (config, changed)
 }
 
 /// 保存配置：先写入临时文件再原子替换，避免写入中断导致损坏
@@ -133,5 +142,14 @@ mod tests {
         let (normalized, changed) = normalize_config(config);
         assert!(!changed);
         assert_eq!(normalized.web_gateway.model, "Qwen3.8-Max-Preview");
+    }
+
+    #[test]
+    fn invalid_history_limit_falls_back_without_eager_persistence() {
+        let mut config = default_config();
+        config.translation_history_limit = 0;
+        let (normalized, changed) = normalize_config(config);
+        assert_eq!(normalized.translation_history_limit, 5);
+        assert!(!changed);
     }
 }

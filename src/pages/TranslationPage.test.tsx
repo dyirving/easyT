@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTranslationStore } from "@/stores/translationStore";
 import { useSettingsStore } from "@/stores/settingsStore";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 import { TranslationPage } from "./TranslationPage";
 
 vi.mock("@/services/translationRunner", () => ({
@@ -10,6 +11,11 @@ vi.mock("@/services/translationRunner", () => ({
 
 import { runTranslationRequest } from "@/services/translationRunner";
 const mockedRunTranslationRequest = vi.mocked(runTranslationRequest);
+
+beforeEach(() => {
+  useTranslationHistoryStore.getState().reset();
+  useTranslationHistoryStore.setState({ initialization: "ready" });
+});
 
 describe("TranslationPage copy state", () => {
   beforeEach(() => useTranslationStore.getState().reset());

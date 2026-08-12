@@ -1,12 +1,17 @@
 // 翻译状态管理
 import { create } from "zustand";
-import { type ErrorKind, type TranslationState } from "@/types";
+import {
+  type ErrorKind,
+  type HistoryWarning,
+  type TranslationState,
+} from "@/types";
 import {
   type PhaseChangedEvent,
   type TranslationResult,
 } from "@/services/tauriCommands";
 
 interface TranslationStore extends TranslationState {
+  historyWarning: HistoryWarning | null;
   /** 切换固定状态 */
   togglePinned: () => void;
   setPinned: (pinned: boolean) => void;
@@ -22,7 +27,15 @@ interface TranslationStore extends TranslationState {
   /** 捕获故障：原子切换到无原文错误态并使旧请求失效 */
   failCapture: (message: string, kind?: ErrorKind) => void;
   /** 仅当 requestId 仍是最新请求时写入成功结果 */
-  succeedRequest: (requestId: string, result: TranslationResult) => boolean;
+  succeedRequest: (requestId: string, result: TranslationDisplayResult) => boolean;
+  /** 持久化成功后移除活动结果；顶部改由 history store 提供。 */
+  finishPersistedRequest: (requestId: string) => boolean;
+  /** 历史保存失败时保留当前进程内的完整成功结果。 */
+  succeedTemporaryRequest: (
+    requestId: string,
+    result: TranslationDisplayResult,
+    warning: HistoryWarning,
+  ) => boolean;
   /** 仅当 requestId 仍是最新请求时追加正文增量 */
   appendTranslationDelta: (requestId: string, delta: string) => boolean;
   /** 接受当前请求严格递增的真实后端阶段。 */
@@ -48,6 +61,11 @@ interface TranslationStore extends TranslationState {
   /** 判断 requestId 是否仍是最新请求 */
   isActiveRequest: (requestId: string) => boolean;
 }
+
+type TranslationDisplayResult = Pick<
+  TranslationResult,
+  "translatedText" | "fromCache" | "totalElapsedMs"
+>;
 
 export const createTranslationRequestId = () =>
   `req_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -79,6 +97,7 @@ const phaseRank = {
   connectingBackend: 2,
   waitingForContent: 3,
   receivingContent: 4,
+  savingHistory: 5,
 } as const;
 
 const clearedActiveProgress = {
@@ -93,9 +112,11 @@ const clearedActiveProgress = {
 
 export const useTranslationStore = create<TranslationStore>((set, get) => ({
   ...initialState,
+  historyWarning: null,
   togglePinned: () => set({ pinned: !get().pinned }),
   setPinned: (pinned) => set({ pinned }),
-  reset: () => set({ ...initialState, pinned: get().pinned }),
+  reset: () =>
+    set({ ...initialState, pinned: get().pinned, historyWarning: null }),
   startRequest: (originalText, forceRefresh = false) => {
     const requestId = createTranslationRequestId();
     const current = get();
@@ -117,6 +138,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       ...clearedActiveProgress,
       requestStartedAtMonotonicMs: performance.now(),
       totalElapsedMs: null,
+      historyWarning: null,
     });
     return requestId;
   },
@@ -133,6 +155,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       refreshErrorMessage: null,
       ...clearedActiveProgress,
       totalElapsedMs: null,
+      historyWarning: null,
     });
   },
   appendTranslationDelta: (requestId, delta) => {
@@ -191,6 +214,39 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       refreshErrorMessage: null,
       ...clearedActiveProgress,
       totalElapsedMs: result.totalElapsedMs,
+      historyWarning: null,
+    });
+    return true;
+  },
+  finishPersistedRequest: (requestId) => {
+    if (get().requestId !== requestId) return false;
+    set({
+      requestId: null,
+      originalText: "",
+      translatedText: "",
+      status: "idle",
+      errorMessage: null,
+      errorKind: null,
+      isPartial: false,
+      fromCache: false,
+      refreshErrorMessage: null,
+      historyWarning: null,
+      ...clearedActiveProgress,
+      totalElapsedMs: null,
+    });
+    return true;
+  },
+  succeedTemporaryRequest: (requestId, result, warning) => {
+    if (get().requestId !== requestId) return false;
+    set({
+      translatedText: result.translatedText,
+      status: "success",
+      isPartial: false,
+      fromCache: result.fromCache,
+      refreshErrorMessage: null,
+      historyWarning: warning,
+      ...clearedActiveProgress,
+      totalElapsedMs: result.totalElapsedMs,
     });
     return true;
   },
@@ -214,6 +270,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       refreshErrorMessage: null,
       ...clearedActiveProgress,
       totalElapsedMs: totalElapsedMs ?? null,
+      historyWarning: null,
     });
     return true;
   },
@@ -229,6 +286,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       refreshErrorMessage: message,
       ...clearedActiveProgress,
       totalElapsedMs: totalElapsedMs ?? null,
+      historyWarning: null,
     });
     return true;
   },

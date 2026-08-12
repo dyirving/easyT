@@ -1,28 +1,41 @@
 import { useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 import {
+  clearTranslationHistory,
   copyTranslation,
+  getTranslationHistoryEntry,
   setWindowPinned,
   toCommandError,
   toFriendlyError,
 } from "@/services/tauriCommands";
 import { runTranslationRequest } from "@/services/translationRunner";
 
-const DEFAULT_MANUAL_INPUT =
-  "Large language models are trained on massive text corpora.";
+async function writeClipboard(text: string) {
+  try {
+    await copyTranslation(text);
+  } catch {
+    await navigator.clipboard.writeText(text);
+  }
+}
 
-/** Owns translation actions and state so the page remains a UI composition. */
+/** Owns active translation and persistent-history orchestration. */
 export function useTranslationController() {
   const translation = useTranslationStore();
+  const history = useTranslationHistoryStore();
   const { config } = useSettingsStore();
   const [copied, setCopied] = useState(false);
-  const [manualInput, setManualInput] = useState(DEFAULT_MANUAL_INPUT);
   const isBusy = ["translating", "streaming", "refreshing"].includes(
     translation.status,
   );
 
-  const translate = async (text: string, forceRefresh = false) => {
+  const translate = async (
+    text: string,
+    forceRefresh = false,
+    replaceEntryId?: string,
+  ) => {
+    history.prepareForNewRequest();
     const requestId = translation.startRequest(text, forceRefresh);
     if (!text.trim()) {
       translation.failRequest(
@@ -41,40 +54,127 @@ export function useTranslationController() {
       );
       return;
     }
-    await runTranslationRequest(requestId, text, { ...config }, forceRefresh);
+    if (replaceEntryId) {
+      await runTranslationRequest(
+        requestId,
+        text,
+        { ...config },
+        forceRefresh,
+        replaceEntryId,
+      );
+    } else {
+      await runTranslationRequest(requestId, text, { ...config }, forceRefresh);
+    }
+  };
+
+  const latestSummary = history.summaries[0];
+  const latestBody = latestSummary
+    ? history.bodiesById[latestSummary.entryId]
+    : undefined;
+  const hasActiveView = translation.status !== "idle";
+  const topPersisted = !hasActiveView ? latestSummary : undefined;
+  const historyRows = topPersisted
+    ? history.summaries.slice(1)
+    : history.summaries;
+
+  const loadEntry = async (entryId: string) => {
+    const cached = useTranslationHistoryStore.getState().bodiesById[entryId];
+    if (cached) return cached;
+    history.setEntryLoading(entryId, true);
+    history.setActionError(null);
+    try {
+      const entry = await getTranslationHistoryEntry(entryId);
+      history.cacheBody(entry);
+      return entry;
+    } catch (error) {
+      history.setActionError(toCommandError(error).message);
+      return null;
+    } finally {
+      history.setEntryLoading(entryId, false);
+    }
+  };
+
+  const toggleHistoryEntry = (entryId: string, open: boolean) => {
+    history.setExpanded(entryId, open);
+    if (open && !history.bodiesById[entryId]) void loadEntry(entryId);
+  };
+
+  const copyEntry = async (entryId: string, all: boolean) => {
+    history.setPendingAction(entryId, all ? "copyAll" : "copy");
+    history.setActionError(null);
+    try {
+      const entry = await loadEntry(entryId);
+      if (!entry) return;
+      await writeClipboard(
+        all
+          ? `${entry.originalText}\n\n${entry.translatedText}`
+          : entry.translatedText,
+      );
+    } catch (error) {
+      history.setActionError(toCommandError(error).message);
+    } finally {
+      history.setPendingAction(entryId, undefined);
+    }
+  };
+
+  const retranslateEntry = async (entryId: string) => {
+    history.setPendingAction(entryId, "retranslate");
+    const entry = await loadEntry(entryId);
+    history.setPendingAction(entryId, undefined);
+    if (entry) await translate(entry.originalText, true, entryId);
   };
 
   const retry = () => {
-    if (translation.originalText) void translate(translation.originalText, true);
+    if (translation.originalText) {
+      void translate(translation.originalText, true);
+    } else if (latestSummary) {
+      void retranslateEntry(latestSummary.entryId);
+    }
   };
 
   const togglePin = () => {
     const next = !translation.pinned;
     translation.togglePinned();
     setWindowPinned(next).catch((error) => {
-      const commandError = toCommandError(error);
-      console.warn("[easyT] set_window_pinned 失败:", commandError.message);
+      console.warn(
+        "[easyT] set_window_pinned 失败:",
+        toCommandError(error).message,
+      );
     });
   };
 
-  const copy = async () => {
-    if (!translation.translatedText) return;
-    const markCopied = () => {
+  const topTranslatedText =
+    translation.status === "success"
+      ? translation.translatedText
+      : topPersisted
+        ? latestBody?.translatedText ?? ""
+        : "";
+
+  const copyTop = async () => {
+    if (!topTranslatedText) return;
+    try {
+      await writeClipboard(topTranslatedText);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    };
-    try {
-      await copyTranslation(translation.translatedText);
-      markCopied();
     } catch (error) {
-      const commandError = toCommandError(error);
-      console.warn("[easyT] copy_translation 失败:", commandError.message);
-      try {
-        await navigator.clipboard.writeText(translation.translatedText);
-        markCopied();
-      } catch {
-        // Both native and browser clipboard access can be unavailable.
-      }
+      console.warn(
+        "[easyT] copy_translation 失败:",
+        toCommandError(error).message,
+      );
+      history.setActionError(toCommandError(error).message);
+    }
+  };
+
+  const confirmClear = async () => {
+    history.setClearPending();
+    history.setActionError(null);
+    try {
+      await clearTranslationHistory();
+      history.clearSucceeded();
+      translation.reset();
+    } catch (error) {
+      history.cancelClear();
+      history.setActionError(toCommandError(error).message);
     }
   };
 
@@ -89,14 +189,22 @@ export function useTranslationController() {
   return {
     ...translation,
     config,
+    history,
     copied,
-    manualInput,
-    setManualInput,
     isBusy,
     friendlyError,
+    topPersisted,
+    topPersistedBody: topPersisted ? latestBody : undefined,
+    historyRows,
+    topTranslatedText,
     translate,
     retry,
     togglePin,
-    copy,
+    copyTop,
+    copy: copyTop,
+    toggleHistoryEntry,
+    copyEntry,
+    retranslateEntry,
+    confirmClear,
   };
 }

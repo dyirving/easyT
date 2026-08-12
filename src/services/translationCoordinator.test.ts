@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 import {
   captureSelectedText,
   positionWindowNearMouse,
@@ -46,6 +47,8 @@ describe("startShortcutTranslation", () => {
 
   beforeEach(() => {
     useTranslationStore.getState().reset();
+    useTranslationHistoryStore.getState().reset();
+    useTranslationHistoryStore.setState({ initialization: "ready" });
     useSettingsStore.getState().resetToDefault();
     setRoute.mockReset();
     win.show.mockReset();

@@ -34,6 +34,7 @@ const PHASE_LABELS: Record<TranslationPhase, string> = {
   connectingBackend: "正在连接翻译服务",
   waitingForContent: "已连接翻译服务，正在等待译文",
   receivingContent: "正在接收译文",
+  savingHistory: "正在保存翻译历史…",
 };
 
 function safeDuration(value: number) {

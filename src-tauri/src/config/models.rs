@@ -111,6 +111,9 @@ pub struct AppConfig {
     pub pinned_by_default: bool,
     #[serde(alias = "max_text_length")]
     pub max_text_length: usize,
+    /// 持久化翻译历史的最大记录数（包含最新译文）。
+    #[serde(default = "default_translation_history_limit")]
+    pub translation_history_limit: u8,
     /// 翻译后端选择
     /// 旧配置文件缺失时默认 OfficialApi，保持行为不变
     #[serde(default)]
@@ -139,9 +142,14 @@ pub fn default_config() -> AppConfig {
         auto_hide: true,
         pinned_by_default: false,
         max_text_length: 5000,
+        translation_history_limit: default_translation_history_limit(),
         backend_mode: BackendMode::OfficialApi,
         web_gateway: WebGatewayConfig::default(),
     }
+}
+
+pub const fn default_translation_history_limit() -> u8 {
+    5
 }
 
 #[cfg(test)]
@@ -188,6 +196,7 @@ mod tests {
         assert_eq!(cfg.web_gateway.provider, WebProviderKind::Qwen);
         assert_eq!(cfg.web_gateway.model, "Qwen3.7-Max");
         assert!(!cfg.web_gateway.save_history);
+        assert_eq!(cfg.translation_history_limit, 5);
     }
 
     #[test]
@@ -245,6 +254,15 @@ mod tests {
         assert_eq!(cfg.base_url, "https://apihub.agnes-ai.com/v1");
         assert_eq!(cfg.model, "agnes-2.0-flash");
         assert_eq!(cfg.backend_mode, BackendMode::OfficialApi);
+    }
+
+    #[test]
+    fn history_limit_defaults_and_serializes_in_frontend_shape() {
+        let config = default_config();
+        assert_eq!(config.translation_history_limit, 5);
+        let value = serde_json::to_value(config).expect("serialize config");
+        assert_eq!(value["translationHistoryLimit"], 5);
+        assert!(value.get("translation_history_limit").is_none());
     }
 
     #[test]

@@ -7,3 +7,6 @@ export { TranslationPanel } from "./TranslationPanel";
 export { TranslationProgress } from "./TranslationProgress";
 export type { ActiveProgressSnapshot } from "./TranslationProgress";
 export { useTranslationController } from "./useTranslationController";
+export { ManualTranslationInput } from "./ManualTranslationInput";
+export { TranslationHistorySection } from "./TranslationHistorySection";
+export { TranslationRecord } from "./TranslationRecord";

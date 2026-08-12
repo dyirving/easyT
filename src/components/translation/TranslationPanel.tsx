@@ -9,15 +9,16 @@ const MarkdownTranslation = lazy(() =>
 interface TranslationPanelProps {
   text: string;
   mode?: "streaming" | "complete" | "partial";
+  bare?: boolean;
 }
 
 /** 译文区域，更突出 */
-export function TranslationPanel({ text, mode = "complete" }: TranslationPanelProps) {
+export function TranslationPanel({ text, mode = "complete", bare = false }: TranslationPanelProps) {
   const isComplete = mode === "complete";
   const isPartial = mode === "partial";
 
-  return (
-    <div className="rounded-lg bg-surface-panel px-3 py-2.5">
+  const content = (
+    <>
       <div className="mb-1 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-accent">
         <span>{isPartial ? "未完成译文" : "译文"}</span>
         {!isComplete && !isPartial ? (
@@ -41,6 +42,7 @@ export function TranslationPanel({ text, mode = "complete" }: TranslationPanelPr
           {text}
         </p>
       )}
-    </div>
+    </>
   );
+  return bare ? <div>{content}</div> : <div className="rounded-lg bg-surface-panel px-3 py-2.5">{content}</div>;
 }

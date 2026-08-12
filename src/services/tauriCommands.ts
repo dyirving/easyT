@@ -6,6 +6,10 @@ import {
   type AppConfig,
   type CacheStats,
   type ErrorKind,
+  type HistoryCommitOutcome,
+  type HistorySnapshot,
+  type SaveConfigResult,
+  type TranslationHistoryEntry,
   type QwenSessionStatus,
   type TranslationPhase,
   type TranslationProgressBackend,
@@ -30,8 +34,24 @@ export async function getConfig(): Promise<AppConfig> {
 /**
  * 保存配置（校验失败不会覆盖原文件）
  */
-export async function saveConfig(config: AppConfig): Promise<void> {
-  await invoke<void>("save_config", { config });
+export async function saveConfig(config: AppConfig): Promise<SaveConfigResult> {
+  return invoke<SaveConfigResult>("save_config", { config });
+}
+
+export async function initializeTranslationHistory(): Promise<HistorySnapshot> {
+  return invoke<HistorySnapshot>("initialize_translation_history");
+}
+
+export async function getTranslationHistoryEntry(
+  entryId: string,
+): Promise<TranslationHistoryEntry> {
+  return invoke<TranslationHistoryEntry>("get_translation_history_entry", {
+    entryId,
+  });
+}
+
+export async function clearTranslationHistory(): Promise<{ clearedCount: number }> {
+  return invoke<{ clearedCount: number }>("clear_translation_history");
 }
 
 export async function getTranslationCacheStats(): Promise<CacheStats> {
@@ -60,6 +80,7 @@ export interface TranslateTextRequest {
   text: string;
   targetLanguage: string;
   forceRefresh: boolean;
+  replaceEntryId?: string;
   onPhaseChanged: (event: PhaseChangedEvent) => void;
   onContentDelta?: (delta: string) => void;
 }
@@ -69,6 +90,8 @@ export interface TranslationResult {
   /** 是否来自本机缓存；未接入缓存时始终为 false */
   fromCache: boolean;
   totalElapsedMs: number;
+  /** Rust 在成功返回前始终给出持久化结果。 */
+  history: HistoryCommitOutcome;
 }
 
 export interface PhaseChangedEvent {
@@ -103,6 +126,7 @@ export async function translateText(
     text: request.text,
     targetLanguage: request.targetLanguage,
     forceRefresh: request.forceRefresh,
+    replaceEntryId: request.replaceEntryId ?? null,
     onEvent: channel,
   });
 }
@@ -337,6 +361,12 @@ export function toFriendlyError(err: CommandError): FriendlyError {
       return {
         friendlyMessage: err.message || "窗口操作失败",
         retryable: false,
+      };
+    case ERROR_KIND.HistoryOperationFailed:
+      return {
+        friendlyMessage: err.message || "翻译历史操作失败",
+        hint: "翻译仍可继续，请稍后重试历史操作",
+        retryable: true,
       };
     case ERROR_KIND.Internal:
     default:

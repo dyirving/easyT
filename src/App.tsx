@@ -5,8 +5,14 @@ import { TranslationPage } from "@/pages/TranslationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
-import { getConfig, toCommandError } from "@/services/tauriCommands";
+import {
+  getConfig,
+  getTranslationHistoryEntry,
+  initializeTranslationHistory,
+  toCommandError,
+} from "@/services/tauriCommands";
 import { startShortcutTranslation } from "@/services/translationCoordinator";
+import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 
 type Route = "translation" | "settings";
 
@@ -42,6 +48,38 @@ export default function App() {
         setBootError(err.message);
       });
   }, [loadConfig]);
+
+  useEffect(() => {
+    let cancelled = false;
+    useTranslationHistoryStore.setState({ initialization: "loading" });
+    initializeTranslationHistory()
+      .then(async (snapshot) => {
+        let latestEntry;
+        if (snapshot.summaries[0]) {
+          try {
+            latestEntry = await getTranslationHistoryEntry(
+              snapshot.summaries[0].entryId,
+            );
+          } catch {
+            // 摘要仍可恢复；正文读取失败作为一次非阻断历史警告展示。
+          }
+        }
+        if (!cancelled) {
+          useTranslationHistoryStore.getState().hydrate(snapshot, latestEntry);
+          if (snapshot.summaries[0] && !latestEntry) {
+            useTranslationHistoryStore
+              .getState()
+              .setActionError("最新翻译记录正文暂时无法读取。");
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) useTranslationHistoryStore.getState().markUnavailable();
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // 监听托盘菜单事件：切换路由
   // Rust 端会先 emit 事件再显示窗口，前端据此切到对应页面

@@ -5,6 +5,7 @@ mod llm;
 mod platform;
 mod shortcut;
 mod translation_backend;
+mod translation_history;
 mod window_state;
 
 use std::sync::Arc;
@@ -13,6 +14,9 @@ use commands::{
     cache::{clear_translation_cache, get_translation_cache_stats},
     clipboard::copy_translation,
     config::{get_config, save_config, AppState},
+    history::{
+        clear_translation_history, get_translation_history_entry, initialize_translation_history,
+    },
     selection::capture_selected_text,
     translate::{test_api_connection, test_connection, translate_text, TranslationRequestManager},
     web_gateway::{begin_web_login, get_web_login_status, logout_web_account},
@@ -28,6 +32,7 @@ use tauri::{
     Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use translation_backend::{cache::TranslationCache, TranslationBackend};
+use translation_history::TranslationHistory;
 
 /// 托盘菜单事件
 const TRAY_EVENT_SHOW: &str = "tray://show";
@@ -84,6 +89,7 @@ pub fn run() {
             };
             // 快捷键副本用于初始化全局快捷键
             let shortcut_str = config.shortcut.clone();
+            let history_limit = config.translation_history_limit;
             app.manage(AppState::new(config));
             app.manage(TranslationRequestManager::new());
 
@@ -97,6 +103,8 @@ pub fn run() {
             qwen_session.restore_from_storage(&data_dir);
             app.manage(cache);
             app.manage(Arc::new(backend));
+            let history = TranslationHistory::start(&data_dir, history_limit);
+            app.manage(history);
 
             window_state::restore_main_window_size(app.handle());
             if let Some(win) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -162,6 +170,9 @@ pub fn run() {
             logout_web_account,
             get_translation_cache_stats,
             clear_translation_cache,
+            initialize_translation_history,
+            get_translation_history_entry,
+            clear_translation_history,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -218,6 +229,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 }
                 if let Some(cache) = app.try_state::<Arc<TranslationCache>>() {
                     tauri::async_runtime::block_on(cache.shutdown());
+                }
+                if let Some(history) = app.try_state::<Arc<TranslationHistory>>() {
+                    tauri::async_runtime::block_on(history.shutdown());
                 }
                 app.exit(0);
             }

@@ -1,22 +1,25 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::app_error::{AppError, AppResult};
 use crate::config::{save_config as persist_config, AppConfig};
 use crate::shortcut;
+use crate::translation_history::{
+    HistoryLimitUpdate, HistoryWarning, SaveConfigResult, TranslationHistory,
+};
 use tauri::{AppHandle, State};
 
 /// 全局配置状态：保存当前内存中的配置快照
 /// 后续阶段（快捷键、窗口固定）会从这里读取，避免每次都解析文件
 pub struct AppState {
     pub config: Mutex<AppConfig>,
-    save_lock: Mutex<()>,
+    save_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
     pub fn new(config: AppConfig) -> Self {
         Self {
             config: Mutex::new(config),
-            save_lock: Mutex::new(()),
+            save_lock: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -52,12 +55,10 @@ pub async fn get_config(state: State<'_, AppState>) -> AppResult<AppConfig> {
 pub async fn save_config(
     app: AppHandle,
     state: State<'_, AppState>,
+    history: State<'_, Arc<TranslationHistory>>,
     config: AppConfig,
-) -> AppResult<()> {
-    let _save_guard = state
-        .save_lock
-        .lock()
-        .map_err(|e| AppError::Internal(format!("配置保存锁获取失败: {e}")))?;
+) -> AppResult<SaveConfigResult> {
+    let _save_guard = state.save_lock.lock().await;
 
     validate_config(&config)?;
 
@@ -82,6 +83,7 @@ pub async fn save_config(
         return Err(e);
     }
 
+    let history_limit = config.translation_history_limit;
     if let Err(e) = state.update(config) {
         let rollback_error = replacement
             .and_then(|replacement| shortcut::rollback_replacement(&app, replacement).err());
@@ -98,7 +100,19 @@ pub async fn save_config(
     }
 
     log::info!("配置已保存");
-    Ok(())
+    let history_update = match history.apply_limit(history_limit).await {
+        Ok(result) => HistoryLimitUpdate::Applied {
+            summaries: result.summaries,
+            evicted_entry_ids: result.evicted_entry_ids,
+        },
+        Err(_) => HistoryLimitUpdate::Warning {
+            warning: HistoryWarning::limit_failed(),
+        },
+    };
+    Ok(SaveConfigResult {
+        history_limit,
+        history_update,
+    })
 }
 
 fn combine_compensation_errors(
@@ -155,6 +169,11 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
             "最大翻译字符数应在 100～20000 之间".to_string(),
         ));
     }
+    if !(1..=20).contains(&config.translation_history_limit) {
+        return Err(AppError::ConfigInvalid(
+            "最多保留翻译历史应为 1～20 的整数".to_string(),
+        ));
+    }
     if config.shortcut.trim().is_empty() {
         return Err(AppError::ConfigInvalid("快捷键不能为空".to_string()));
     }
@@ -163,8 +182,9 @@ pub fn validate_config(config: &AppConfig) -> AppResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::combine_compensation_errors;
+    use super::{combine_compensation_errors, validate_config};
     use crate::app_error::AppError;
+    use crate::config::default_config;
 
     #[test]
     fn compensation_error_reports_every_failed_action() {
@@ -186,5 +206,22 @@ mod tests {
             combine_compensation_errors(AppError::Internal("更新失败".to_string()), None, None);
 
         assert_eq!(error.to_string(), "内部错误: 更新失败");
+    }
+
+    #[test]
+    fn history_limit_validation_accepts_only_one_through_twenty() {
+        for limit in [1, 20] {
+            let mut config = default_config();
+            config.translation_history_limit = limit;
+            assert!(validate_config(&config).is_ok());
+        }
+        for limit in [0, 21] {
+            let mut config = default_config();
+            config.translation_history_limit = limit;
+            assert!(matches!(
+                validate_config(&config),
+                Err(AppError::ConfigInvalid(_))
+            ));
+        }
     }
 }

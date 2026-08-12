@@ -2,7 +2,7 @@
 
 easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览器、PDF 阅读器、Word 等应用中选中文本，通过全局快捷键获取选区并调用大模型翻译，结果会显示在鼠标附近的置顶窗口中。
 
-当前版本为 **2.1.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
+当前版本为 **2.3.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
 
 - **Official API**：调用 OpenAI-compatible Chat Completions API，支持多个内置供应商及自定义接口。
 - **Qwen 网页实验模式**：登录 Qwen 网页账号后，使用网页登录态调用 Qwen 私有接口，无需填写 API Key。
@@ -13,7 +13,9 @@ easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览�
 
 - 任意应用选中文本后，通过可配置的全局快捷键触发翻译；无选区时按快捷键会显示翻译窗口并保留当前状态
 - 自动在鼠标附近显示窗口，并适配多显示器工作区
-- 支持手动输入文本进行翻译
+- 无历史记录或选区捕获失败时，可通过“手动输入翻译”输入文本
+- 持久化保存最近 1～20 条翻译历史，重启后仍可查看原文和译文
+- 支持复制历史译文、复制原文与译文、使用当前设置重新翻译，以及独立清空全部历史
 - 支持 Official API 与 Qwen 网页实验模式切换
 - 内置 Agnes、DeepSeek、Qwen、GLM、Kimi、DouBao 供应商配置
 - 支持自定义 OpenAI-compatible Base URL 和模型名称
@@ -46,7 +48,7 @@ easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览�
 
 ## 安装
 
-从项目 [Releases](../../releases) 下载 2.1.0 或更新版本：
+从项目 [Releases](../../releases) 下载 2.3.0 或更新版本：
 
 - `easyT_{version}_x64-setup.exe`：NSIS 安装程序（**推荐**）
 - `easyT_{version}_x64_en-US.msi`：MSI 安装包
@@ -128,6 +130,18 @@ easyT 会自动缓存完整、非空且不超过 1 MiB 的翻译结果；不需�
 
 L2 不可用时，easyT 会进入持久化缓存降级状态：已有 L1 仍可命中，未命中请求直接走翻译后端，新的成功结果仍可写入 L1。用户可重建 L2，或在下次启动时让应用再次尝试打开原缓存。
 
+## 翻译历史
+
+成功翻译会保存到独立的本机 SQLite 历史库，并在下次启动时恢复。翻译历史记录用户的翻译行为，与用于减少网络请求的翻译缓存相互独立。
+
+- 默认保留最近 5 条，可在设置中调整为 1～20 条；超过上限时自动淘汰最旧记录。
+- 最新记录显示在窗口顶部，其他记录按时间倒序展示；正文按需加载。
+- 历史记录支持复制译文、复制原文与译文，以及使用当前设置重新翻译。
+- 相同原文的多次翻译会分别记录，不按内容去重。
+- 单条历史记录的逻辑大小上限为 2 MiB；超限或保存失败不会影响本次译文展示。
+- “清空历史”只删除翻译历史，不会清除 L1/L2 翻译缓存。
+- 有历史记录且选区捕获正常时，手动输入区域默认隐藏；空历史或捕获失败时显示“手动输入翻译”入口。
+
 ## 配置项
 
 | 配置项 | 说明 | 默认值 |
@@ -142,6 +156,7 @@ L2 不可用时，easyT 会进入持久化缓存降级状态：已有 L1 仍可�
 | 目标语言 | 简体中文 / 繁體中文 / English / 日本語 | 简体中文 |
 | 请求超时 | 5 至 300 秒 | 60 秒 |
 | 最大翻译字符数 | 100 至 20000 | 5000 |
+| 最多保留翻译历史 | 持久化保存最近 1 至 20 条完整记录 | 5 |
 | 自动隐藏窗口 | 非固定窗口失焦后自动隐藏 | 开启 |
 | 默认常驻窗口 | 启动后默认固定翻译窗口 | 关闭 |
 | 保存到 Qwen 对话记录 | 仅影响 Qwen 网页实验模式 | 关闭 |
@@ -165,6 +180,8 @@ easyT_Data/
 │       └── profile/
 ├── cache/
 │   └── translation_cache.sqlite3
+├── translation_history/
+│   └── history.sqlite
 └── logs/                 # 仅开发构建
 ```
 
@@ -174,6 +191,7 @@ easyT_Data/
 - Qwen 登录凭证以明文保存在 `web_gateway/qwen/credentials.bin` 中，不会写入 `config.json` 或日志。
 - Qwen 请求期间使用的凭证内存副本会在释放时清理，但本地凭证文件本身未加密。
 - 翻译缓存保存完整译文及其来源元数据；原文不会写入 SQLite。缓存内容为本机明文数据，请仅在可信设备上使用。
+- 翻译历史保存完整原文、译文及来源元数据，均为本机明文数据；清空翻译缓存不会删除历史，清空历史也不会删除缓存。
 - 清除翻译缓存会删除主库、WAL/SHM 与隔离文件，但不是存储介质安全擦除。
 - 点击“退出登录”会删除 Qwen 凭证和专用浏览器 profile。
 - 请勿在公共、共享或不可信设备上配置真实 API Key 或登录 Qwen。
@@ -225,9 +243,9 @@ src-tauri/target/release/
 ├── easyt.exe
 └── bundle/
     ├── msi/
-    │   └── easyT_2.1.0_x64_en-US.msi
+    │   └── easyT_2.3.0_x64_en-US.msi
     └── nsis/
-        └── easyT_2.1.0_x64-setup.exe
+        └── easyT_2.3.0_x64-setup.exe
 ```
 
 ## 技术栈
@@ -243,7 +261,7 @@ src-tauri/target/release/
 | 剪贴板 | tauri-plugin-clipboard-manager 2 |
 | 按键模拟 | enigo 0.2 |
 | HTTP 与流式响应 | reqwest 0.12、futures-util、SSE |
-| 翻译缓存 | BLAKE3、lru、rusqlite bundled SQLite |
+| 翻译缓存与历史 | BLAKE3、lru、rusqlite bundled SQLite |
 | Windows API | windows-sys 0.59 |
 | 后端 | Rust、Tokio |
 
@@ -252,7 +270,7 @@ src-tauri/target/release/
 ```text
 easyT/
 ├── src/
-│   ├── components/                 # 翻译界面、状态组件和基础 UI
+│   ├── components/                 # 翻译界面、领域组件和 UI Kit
 │   ├── pages/                      # 翻译页与设置页
 │   ├── services/                   # Tauri Command 封装与快捷键翻译协调
 │   ├── stores/                     # Zustand 状态
@@ -267,6 +285,7 @@ easyT/
 │   │   ├── config/                 # 配置模型、校验与持久化
 │   │   ├── platform/               # Windows 选区、剪贴板和窗口定位
 │   │   ├── translation_backend/    # Official API 与 WebGateway 后端
+│   │   ├── translation_history/    # 持久化翻译历史及 SQLite worker
 │   │   ├── lib.rs                  # 应用、窗口、托盘及插件初始化
 │   │   ├── shortcut.rs             # 全局快捷键管理
 │   │   └── window_state.rs         # 窗口尺寸持久化
@@ -290,6 +309,7 @@ easyT/
 - 需要重新翻译时，请返回其他应用选中文本后再按快捷键。
 - 部分 PDF 阅读器或特殊控件不支持通过 `Ctrl+C` 获取选区，可先在浏览器或记事本中验证。
 - easyT 会暂时读取复制结果并恢复原剪贴板；如果目标应用复制较慢，可再次尝试。
+- 捕获失败时可在翻译窗口点击“手动输入翻译”继续使用；存在正常历史记录时该入口默认隐藏。
 
 ### Official API 连接失败
 
@@ -311,7 +331,7 @@ easyT/
 
 ## 项目范围
 
-当前项目不包含后端服务器、数据库、用户系统、OCR、截图翻译、浏览器扩展、翻译历史和自动更新。
+当前项目不包含后端服务器、云端数据库、用户系统、OCR、截图翻译、浏览器扩展和自动更新。
 
 ## License
 

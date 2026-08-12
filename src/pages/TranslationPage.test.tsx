@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useTranslationStore } from "@/stores/translationStore";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -67,11 +67,47 @@ describe("TranslationPage shortcut behavior", () => {
     expect(screen.getByText(/有选区时按/)).toBeInTheDocument();
     expect(screen.getByText(/无选区时显示翻译窗口/)).toBeInTheDocument();
     expect(
+      screen.queryByPlaceholderText(
+        "例如：Large language models are trained on massive text corpora.",
+      ),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "手动输入翻译" }));
+    expect(
       screen.getByPlaceholderText(
         "例如：Large language models are trained on massive text corpora.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Ctrl+T")).not.toBeInTheDocument();
+  });
+
+  it("hides the manual translation entry when history exists", () => {
+    const summary = {
+      entryId: "history-id",
+      originalSummary: "source",
+      translatedSummary: "译文",
+      targetLanguage: "简体中文",
+      sourceBackend: "officialApi" as const,
+      sourceProvider: "agnes",
+      sourceModel: "agnes-2.0-flash",
+      fromCache: false,
+      totalElapsedMs: 20,
+      completedAtUtcMs: Date.now(),
+    };
+    useTranslationHistoryStore.getState().hydrate(
+      { state: "ready", limit: 5, summaries: [summary] },
+      { ...summary, originalText: "source", translatedText: "译文" },
+    );
+
+    render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
+
+    expect(
+      screen.queryByRole("button", { name: "手动输入翻译" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByPlaceholderText(
+        "例如：Large language models are trained on massive text corpora.",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   it("T-013 hides retry for capture failures without original text", () => {
@@ -81,8 +117,41 @@ describe("TranslationPage shortcut behavior", () => {
 
     expect(screen.getByText("剪贴板被占用")).toBeInTheDocument();
     expect(
+      screen.getByRole("button", { name: "手动输入翻译" }),
+    ).toBeInTheDocument();
+    expect(
       screen.queryByRole("button", { name: "重试" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("offers manual translation after capture failure even with history", () => {
+    const summary = {
+      entryId: "history-id",
+      originalSummary: "source",
+      translatedSummary: "译文",
+      targetLanguage: "简体中文",
+      sourceBackend: "officialApi" as const,
+      sourceProvider: "agnes",
+      sourceModel: "agnes-2.0-flash",
+      fromCache: false,
+      totalElapsedMs: 20,
+      completedAtUtcMs: Date.now(),
+    };
+    useTranslationHistoryStore.getState().hydrate({
+      state: "ready",
+      limit: 5,
+      summaries: [summary],
+    });
+    useTranslationStore.getState().failCapture("剪贴板被占用", "ClipboardError");
+
+    render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "手动输入翻译" }));
+    expect(
+      screen.getByPlaceholderText(
+        "例如：Large language models are trained on massive text corpora.",
+      ),
+    ).toBeInTheDocument();
   });
 
   it("T-013 keeps retry for retryable translation failures with original text", () => {
@@ -146,6 +215,7 @@ describe("TranslationPage refresh intent", () => {
   it("manual translate sends an ordinary (non-refresh) request", async () => {
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "手动输入翻译" }));
     const translateButton = screen.getByRole("button", { name: "翻译" });
     translateButton.click();
 

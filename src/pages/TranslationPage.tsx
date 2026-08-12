@@ -12,7 +12,7 @@ import {
   useTranslationController,
 } from "@/components/translation";
 import { ConfirmDialog, StatusBanner } from "@/components/patterns";
-import { Collapsible, Spinner } from "@/components/ui";
+import { Button, Collapsible, Spinner } from "@/components/ui";
 
 interface TranslationPageProps {
   onOpenSettings: () => void;
@@ -91,6 +91,10 @@ export function TranslationPage({
     topTranslatedText &&
       ((status === "success" && !isPartial) || topPersistedBody),
   );
+  const captureFailedWithoutText =
+    status === "error" && requestId === null && !originalText;
+  const offerManualTranslation =
+    history.summaries.length === 0 || captureFailedWithoutText;
 
   return (
     <div className="flex h-full flex-col">
@@ -135,15 +139,26 @@ export function TranslationPage({
               />
             ) : null}
 
-            <ManualTranslationInput
-              open={history.manualInputOpen}
-              value={history.manualInput}
-              maxLength={config.maxTextLength}
-              disabled={isBusy || history.capturePending}
-              onOpenChange={history.setManualInputOpen}
-              onValueChange={history.setManualInput}
-              onTranslate={() => void controller.translate(history.manualInput)}
-            />
+            {history.manualInputOpen ? (
+              <ManualTranslationInput
+                open
+                value={history.manualInput}
+                maxLength={config.maxTextLength}
+                disabled={isBusy || history.capturePending}
+                onOpenChange={history.setManualInputOpen}
+                onValueChange={history.setManualInput}
+                onTranslate={() => void controller.translate(history.manualInput)}
+              />
+            ) : offerManualTranslation ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isBusy || history.capturePending}
+                onClick={() => history.setManualInputOpen(true)}
+              >
+                手动输入翻译
+              </Button>
+            ) : null}
 
             {status === "idle" && !topPersisted ? (
               <p className="py-3 text-center text-sm text-ink-muted">

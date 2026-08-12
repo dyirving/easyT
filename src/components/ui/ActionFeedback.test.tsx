@@ -40,6 +40,16 @@ describe("Button", () => {
     expect(onClick).not.toHaveBeenCalled();
     expect(screen.getByRole("status", { name: "正在保存" })).toBeInTheDocument();
   });
+
+  it("gives danger actions a visible danger-colored outline", () => {
+    render(<Button variant="danger">清空历史</Button>);
+
+    expect(screen.getByRole("button", { name: "清空历史" })).toHaveClass(
+      "border",
+      "border-danger/50",
+      "rounded-control",
+    );
+  });
 });
 
 describe("IconButton", () => {
@@ -74,6 +84,20 @@ describe("IconButton", () => {
     expect(button).toBeDisabled();
     expect(button).toHaveAttribute("aria-busy", "true");
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("uses the same danger-colored outline as danger buttons", () => {
+    render(
+      <IconButton label="删除" variant="danger">
+        <Circle />
+      </IconButton>,
+    );
+
+    expect(screen.getByRole("button", { name: "删除" })).toHaveClass(
+      "border",
+      "border-danger/50",
+      "rounded-control",
+    );
   });
 });
 

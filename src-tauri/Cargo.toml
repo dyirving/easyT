@@ -1,6 +1,6 @@
 [package]
 name = "easyt"
-version = "2.2.0"
+version = "2.3.0"
 description = "easyT - 轻量级 Windows 划词翻译应用"
 authors = ["easyT"]
 edition = "2021"

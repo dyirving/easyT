@@ -5,11 +5,11 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Implemented |
-| 版本 | 1.0.1 |
+| 版本 | 1.1 |
 | 最后更新 | 2026-08-13 |
 | 目标项目/模块 | easyT 2.x；Rust `translation_history` 深模块、翻译命令、前端翻译与设置领域 |
 | 预期实施者 | Model-neutral coding agent |
-| 需求来源 | `docs/翻译历史需求与架构共识文档.md` v1.0（Approved） |
+| 需求来源 | `docs/翻译历史需求与架构共识文档.md` v1.1（Approved） |
 | 相关设计 | `docs/SDD-translation-cache.md`、`docs/SDD-translation-request-progress.md`、`docs/UI-Kit需求与架构共识文档.md` |
 | 代码版本 | `4eedc50cd17e413ceaee2a5b345f059de8befc75`（Pre-implementation） |
 | 本文路径 | `docs/SDD-translation-history.md` |
@@ -22,6 +22,7 @@
 | 0.2 | 2026-08-13 | 项目所有者通过 `/implement` 明确批准设计并授权实施 |
 | 1.0 | 2026-08-13 | 完成 Rust/前端/UI Kit 实施、自动验证、原生窗口验收与安装包构建 |
 | 1.0.1 | 2026-08-13 | 修正 tagged enum struct variant 字段的 camelCase IPC 序列化，并增加合同回归测试 |
+| 1.1 | 2026-08-13 | 按项目所有者决定将手动输入改为空历史/捕获故障时的按需按钮入口 |
 
 > 项目所有者已通过 `/implement` 明确批准本文并授权实施。实施期间若合同、schema 或行为变化，仍须执行偏差协议。
 
@@ -119,7 +120,7 @@ flowchart LR
 | FR-013 | 历史故障或超限 MUST 保留完整翻译为临时成功结果并给出对应弱警告 | Must | 翻译/缓存仍成功，持久化计数不增，重启后临时结果可丢失 |
 | FR-014 | 损坏或不支持的历史库 MUST 隔离 main/WAL/SHM 并创建空库；正常旧 schema MUST 迁移 | Must | 隔离文件保留，新库可写，启动只显示一次恢复警告 |
 | FR-015 | 翻译保存 MUST 使用现有进度通道发布真实 `savingHistory` 阶段 | Must | 缓存处理后才出现；总耗时含保存等待；阶段/增量不抢滚动 |
-| FR-016 | 手动输入 MUST 在恢复历史后可用并遵守折叠、禁用和输入保留规则 | Must | 有历史默认折叠，无历史默认展开；折叠不丢输入；活动请求禁用 |
+| FR-016 | 手动输入 MUST 作为空历史和无原文捕获故障的按需备用入口，并遵守禁用和输入保留规则 | Must | 默认仅显示按钮；正常已有历史不显示；点击展开不丢输入；活动请求禁用 |
 | FR-017 | 清空、复制、展开和重新翻译 MUST 提供需求指定的 pending/disabled/确认行为 | Must | 活动请求禁用清空；ConfirmDialog 文案准确；按需读取时仅局部 pending |
 | FR-018 | 新请求和清空成功 MUST 各只触发一次滚动到顶部，显示恢复与页面往返 MUST 保留运行期滚动位置 | Must | phase/timer/delta 不重复滚动，设置页返回位置不变 |
 
@@ -534,12 +535,12 @@ interface TranslationHistoryState {
 
 必须提供的原子 action：
 
-- `hydrate(snapshot)`：替换 summaries、设置最新 body 的后续加载状态、按状态决定手动输入默认展开。
+- `hydrate(snapshot)`：替换 summaries、设置最新 body 的后续加载状态，并保持手动输入默认关闭。
 - `applySavedCommit(summary, originalText, translatedText, replacedId, evictedIds)`：删除替换/淘汰 ID，插入并排序新摘要，缓存正文。
 - `applyLimitUpdate`：替换 summaries 并清理 body/展开/pending 中已淘汰 ID。
 - `cacheBody`、`setEntryLoading`、`setExpanded`。
 - `prepareForNewRequest`：折叠全部历史、折叠手动输入并仅递增一次 scroll token。
-- `clearSucceeded`：清空持久化视图、回到手动输入展开并递增 scroll token。
+- `clearSucceeded`：清空持久化视图、回到显示手动输入按钮的 idle 状态并递增 scroll token。
 - `rememberScrollTop`，用于设置页往返恢复。
 
 store 不调用 service 或 `translationStore`。数组始终按后端排序；任何前端 upsert 后使用 `completedAtUtcMs DESC`，相同时间保持后端返回顺序，不尝试使用不可见 sequence 重排。下一次 snapshot 是最终权威。
@@ -643,7 +644,8 @@ src/components/translation/
 
 ### 8.4 手动输入与滚动
 
-- 无持久化记录且无活动状态时手动输入默认展开；已有历史时默认折叠。
+- 无持久化记录或出现无原文的选区捕获故障时显示“手动输入翻译”按钮，输入区默认不渲染；正常已有历史时不显示入口。
+- 点击按钮后展开输入区；折叠后在仍满足入口条件时恢复按钮。
 - 折叠保留 `manualInput`，失败也保留；活动请求禁用。
 - 翻译页滚动容器保存 `scrollTop` 到 history store。页面 mount/设置页返回先恢复该值。
 - `scrollToTopToken` 只在请求启动或清空成功递增；effect 对 token 每值执行一次 `scrollTo({top:0})`。phase、elapsed、delta、展开/折叠均不得修改 token。
@@ -1094,7 +1096,7 @@ SDD 非 Approved、Q-001 未解决或发生阻塞冲突时不得编辑业务代�
 | 检查 | 实际结果 |
 |---|---|
 | `npm run typecheck` | exit 0 |
-| `npm test -- --run` | 17 files / 82 tests passed |
+| `npm test -- --run` | 17 files / 86 tests passed |
 | `npm run build` | exit 0；主入口 252.27 kB（gzip 79.28 kB），Markdown lazy chunk 392.28 kB（gzip 119.37 kB） |
 | `cargo fmt -- --check` | exit 0 |
 | `cargo test` | 192 tests passed |

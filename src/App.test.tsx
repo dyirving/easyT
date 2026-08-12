@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { useSettingsStore } from "@/stores/settingsStore";
@@ -127,6 +127,7 @@ describe("App shortcut route gating", () => {
       ),
     );
     expect(screen.getByText("翻译历史暂时不可用。")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "手动输入翻译" }));
     expect(screen.getByRole("button", { name: "翻译" })).toBeEnabled();
   });
 });

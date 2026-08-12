@@ -92,7 +92,7 @@ describe("translationHistoryStore", () => {
     useTranslationHistoryStore.getState().clearSucceeded();
     expect(useTranslationHistoryStore.getState()).toMatchObject({
       summaries: [],
-      manualInputOpen: true,
+      manualInputOpen: false,
       scrollToTopToken: token + 1,
     });
   });

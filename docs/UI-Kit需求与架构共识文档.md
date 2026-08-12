@@ -339,6 +339,7 @@ loadingLabel?: string
 
 - loading 时自动 disabled、显示 Spinner、设置 aria-busy。
 - 图标作为 children 组合，不增加 leftIcon/rightIcon。
+- danger 使用危险色边框，静止状态也必须保留清晰的圆角轮廓。
 - 不提供 asChild 或链接按钮。
 
 ### 8.3 IconButton
@@ -354,6 +355,7 @@ loading?: boolean
 - label 必填，用于 aria-label 和默认 title。
 - 只允许一个图标作为可见内容。
 - pressed 用于固定窗口等 toggle。
+- danger 与 Button 保持一致，使用危险色边框。
 - 标题栏统一使用 sm。
 - 页面不得覆盖尺寸或 tone。
 

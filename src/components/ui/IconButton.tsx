@@ -19,7 +19,8 @@ const baseClass = "inline-flex shrink-0 items-center justify-center rounded-cont
 const variantClass: Record<IconButtonVariant, string> = {
   ghost: "text-ink-soft hover:bg-surface-soft hover:text-ink",
   outline: "border border-line bg-surface-panel text-ink hover:bg-surface-soft",
-  danger: "text-danger hover:bg-danger/10",
+  danger:
+    "border border-danger/50 bg-surface-panel text-danger hover:border-danger hover:bg-danger/10",
 };
 
 const sizeClass: Record<IconButtonSize, string> = {

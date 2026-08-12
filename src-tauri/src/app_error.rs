@@ -85,7 +85,7 @@ struct ErrorResponse {
 }
 
 impl AppError {
-    fn kind_str(&self) -> &'static str {
+    pub(crate) fn kind_str(&self) -> &'static str {
         match self {
             AppError::NoSelectedText => "NoSelectedText",
             AppError::TextTooLong => "TextTooLong",

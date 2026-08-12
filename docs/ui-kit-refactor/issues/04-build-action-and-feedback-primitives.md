@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-002 and Phase 2.
@@ -34,3 +36,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-002
 ## Comments
 
 - 2026-08-11：按 TDD 新增 `ActionFeedback.test.tsx`，先验证 seam 缺失失败，再实现 `Spinner`、升级 `Button`、新增 `IconButton` 与 `ui/index.ts`。`size="icon"` 已从公开 Button contract 删除，标题栏与缓存详情的 6 个生产调用点迁为 `IconButton size="sm"`，保持原 32px 尺寸。Button/Spinner 视觉 recipe 从旧全局 recipe 收拢到组件，但旧 CSS recipe 仍按 03 的清理清单保留至后续迁移。静态搜索确认无 `size="icon"` 和 `ui` forbidden import；现有 `Field`/`Input`/`Switch` 深路径 import 属后续表单工单范围。`npm run typecheck`、`npm test`（8 files / 51 tests）与 `npm run build` 均通过。生产 JS gzip 从 72.93 KiB 到 73.32 KiB（+0.39 KiB），CSS gzip 从 12.84 KiB 到 12.79 KiB（-0.05 KiB），均在预算内。可见变化仅为 loading 的 spinner/状态播报及新增键盘 focus-visible，均为本票批准的交互与无障碍行为。
+- 2026-08-12: UI Kit 最终验收通过，本工单归档为 completed。

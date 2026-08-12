@@ -26,11 +26,9 @@ use uuid::Uuid;
 
 use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
-use crate::translation_backend::models::{
-    BackendProgress, BackendRequest, BackendResult, BackendSource, TranslationProgress,
-};
+use crate::translation_backend::models::{BackendRequest, BackendResult, BackendSource};
 use crate::translation_backend::prompt::build_system_prompt;
-use crate::translation_backend::BackendHealth;
+use crate::translation_backend::{BackendHealth, TranslationPhase, TranslationProgressReporter};
 
 use super::session::{ensure_qwen_ready, QwenSession};
 use super::sse_decoder::{DecodeOutcome, QwenSseDecoder};
@@ -76,6 +74,7 @@ impl QwenWebAdapter {
         &self,
         config: &AppConfig,
         request: BackendRequest,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         ensure_qwen_ready(&self.session, config)?;
 
@@ -88,7 +87,9 @@ impl QwenWebAdapter {
             .borrow_ticket(&app_data)?
             .ok_or(BackendError::LoginRequired)?;
 
-        let result = self.translate_with_ticket(config, request, &ticket).await;
+        let result = self
+            .translate_with_ticket(config, request, &ticket, progress)
+            .await;
         // ticket 在此 drop 并显式清理内存副本
         drop(ticket);
 
@@ -106,7 +107,7 @@ impl QwenWebAdapter {
         &self,
         config: &AppConfig,
         request: BackendRequest,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         ensure_qwen_ready(&self.session, config)?;
 
@@ -137,6 +138,7 @@ impl QwenWebAdapter {
         config: &AppConfig,
         request: BackendRequest,
         ticket: &TicketSecret,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         let timeout = config.timeout_seconds.clamp(5, 300);
         let prepared = prepare_qwen_request(config, &request, ticket)?;
@@ -154,6 +156,7 @@ impl QwenWebAdapter {
             let remaining = deadline
                 .checked_duration_since(tokio::time::Instant::now())
                 .ok_or(BackendError::Timeout)?;
+            progress.phase(TranslationPhase::ConnectingBackend, None);
             let resp = self
                 .http_client
                 .post(&prepared.url)
@@ -167,8 +170,9 @@ impl QwenWebAdapter {
 
             let status = resp.status();
             if status.is_success() {
+                progress.phase(TranslationPhase::WaitingForContent, None);
                 return self
-                    .consume_sse_stream(resp, &prepared.model, None, None)
+                    .consume_sse_stream(resp, &prepared.model, progress, false, None)
                     .await;
             }
 
@@ -197,7 +201,7 @@ impl QwenWebAdapter {
         config: &AppConfig,
         request: BackendRequest,
         ticket: &TicketSecret,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         let timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 300));
         let prepared = prepare_qwen_request(config, &request, ticket)?;
@@ -209,6 +213,7 @@ impl QwenWebAdapter {
             request.text.chars().count()
         );
 
+        progress.phase(TranslationPhase::ConnectingBackend, None);
         let response = tokio::time::timeout(
             timeout,
             self.http_client
@@ -237,7 +242,9 @@ impl QwenWebAdapter {
             return Err(map_status_to_error(status));
         }
 
-        self.consume_sse_stream(response, &prepared.model, Some(progress), Some(timeout))
+        progress.phase(TranslationPhase::WaitingForContent, None);
+
+        self.consume_sse_stream(response, &prepared.model, progress, true, Some(timeout))
             .await
     }
 
@@ -245,7 +252,8 @@ impl QwenWebAdapter {
         &self,
         resp: reqwest::Response,
         model: &str,
-        progress: Option<Arc<dyn TranslationProgress>>,
+        progress: Arc<TranslationProgressReporter>,
+        emit_content: bool,
         idle_timeout: Option<Duration>,
     ) -> Result<BackendResult, BackendError> {
         use futures_util::StreamExt;
@@ -253,24 +261,28 @@ impl QwenWebAdapter {
         let stream = resp
             .bytes_stream()
             .map(|chunk| chunk.map_err(map_stream_error));
-        consume_qwen_sse_chunks(stream, model, progress, idle_timeout).await
+        consume_qwen_sse_chunks(stream, model, progress, emit_content, idle_timeout).await
     }
 
-    pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
+    pub async fn test_connection(
+        &self,
+        config: &AppConfig,
+        progress: Arc<TranslationProgressReporter>,
+    ) -> Result<BackendHealth, BackendError> {
         ensure_qwen_ready(&self.session, config)?;
 
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
         };
-        let result = self.translate(config, request).await?;
+        let result = self.translate(config, request, progress).await?;
         Ok(BackendHealth::translation_succeeded("连接成功", &result))
     }
 
     pub async fn test_connection_stream(
         &self,
         config: &AppConfig,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendHealth, BackendError> {
         ensure_qwen_ready(&self.session, config)?;
         let request = BackendRequest {
@@ -288,7 +300,8 @@ impl QwenWebAdapter {
 async fn consume_qwen_sse_chunks<S, B>(
     stream: S,
     model: &str,
-    progress: Option<Arc<dyn TranslationProgress>>,
+    progress: Arc<TranslationProgressReporter>,
+    emit_content: bool,
     idle_timeout: Option<Duration>,
 ) -> Result<BackendResult, BackendError>
 where
@@ -319,9 +332,15 @@ where
             match outcome {
                 DecodeOutcome::Delta(delta) => {
                     if let Some(content) = delta.content_delta {
+                        if content.is_empty() {
+                            continue;
+                        }
+                        if content_acc.is_empty() {
+                            progress.phase(TranslationPhase::ReceivingContent, None);
+                        }
                         content_acc.push_str(&content);
-                        if let Some(progress) = progress.as_ref() {
-                            progress.emit(BackendProgress::ContentDelta(content))?;
+                        if emit_content {
+                            progress.content_delta(content)?;
                         }
                         if let Some(timeout) = idle_timeout {
                             deadline = Some(tokio::time::Instant::now() + timeout);
@@ -567,16 +586,34 @@ mod tests {
     use futures_util::stream;
 
     use super::*;
+    use crate::translation_backend::{PhaseProgress, TranslationProgress};
 
     #[derive(Default)]
-    struct RecordingProgress(Mutex<Vec<String>>);
+    struct RecordingProgress {
+        deltas: Mutex<Vec<String>>,
+        phases: Mutex<Vec<TranslationPhase>>,
+    }
 
     impl TranslationProgress for RecordingProgress {
-        fn emit(&self, progress: BackendProgress) -> Result<(), BackendError> {
-            let BackendProgress::ContentDelta(delta) = progress;
-            self.0.lock().expect("deltas lock").push(delta);
+        fn phase_changed(&self, progress: PhaseProgress) {
+            self.phases
+                .lock()
+                .expect("phases lock")
+                .push(progress.phase);
+        }
+
+        fn content_delta(&self, delta: String) -> Result<(), BackendError> {
+            self.deltas.lock().expect("deltas lock").push(delta);
             Ok(())
         }
+    }
+
+    fn reporter(progress: Arc<RecordingProgress>) -> Arc<TranslationProgressReporter> {
+        let reporter = Arc::new(TranslationProgressReporter::new(progress));
+        reporter.phase(TranslationPhase::PreparingRequest, None);
+        reporter.phase(TranslationPhase::ConnectingBackend, None);
+        reporter.phase(TranslationPhase::WaitingForContent, None);
+        reporter
     }
 
     fn content_event(content: &str, complete: bool) -> Vec<u8> {
@@ -649,23 +686,34 @@ mod tests {
         let result = consume_qwen_sse_chunks(
             chunks,
             "test-model",
-            Some(progress.clone()),
+            reporter(progress.clone()),
+            true,
             Some(Duration::from_secs(1)),
         )
         .await
         .expect("completed stream");
 
         assert_eq!(result.translated_text, "译文");
-        assert_eq!(*progress.0.lock().unwrap(), vec!["译", "文"]);
+        assert_eq!(*progress.deltas.lock().unwrap(), vec!["译", "文"]);
+        assert_eq!(
+            progress.phases.lock().unwrap().last(),
+            Some(&TranslationPhase::ReceivingContent)
+        );
     }
 
     #[tokio::test]
     async fn eof_without_complete_is_partial() {
         let chunks = stream::iter(vec![Ok::<_, BackendError>(content_event("partial", false))]);
 
-        let error = consume_qwen_sse_chunks(chunks, "test-model", None, None)
-            .await
-            .expect_err("EOF without completion must fail");
+        let error = consume_qwen_sse_chunks(
+            chunks,
+            "test-model",
+            Arc::new(TranslationProgressReporter::discard()),
+            false,
+            None,
+        )
+        .await
+        .expect_err("EOF without completion must fail");
 
         assert!(matches!(error, BackendError::PartialResponse(_)));
     }
@@ -689,7 +737,8 @@ mod tests {
         let error = consume_qwen_sse_chunks(
             chunks,
             "test-model",
-            Some(Arc::new(RecordingProgress::default())),
+            reporter(Arc::new(RecordingProgress::default())),
+            true,
             Some(Duration::from_millis(30)),
         )
         .await

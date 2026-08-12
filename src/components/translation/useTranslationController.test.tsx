@@ -59,7 +59,7 @@ describe("useTranslationController", () => {
 
   it("retries the original text with forceRefresh", async () => {
     const requestId = useTranslationStore.getState().startRequest("source");
-    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: true });
+    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: true, totalElapsedMs: 8 });
     const { result } = renderHook(() => useTranslationController());
 
     act(() => result.current.retry());
@@ -69,7 +69,7 @@ describe("useTranslationController", () => {
 
   it("copies completed text and reflects the copied state", async () => {
     const requestId = useTranslationStore.getState().startRequest("source");
-    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false });
+    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false, totalElapsedMs: 1200 });
     const { result } = renderHook(() => useTranslationController());
 
     await act(() => result.current.copy());
@@ -83,7 +83,7 @@ describe("useTranslationController", () => {
     const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
     const requestId = useTranslationStore.getState().startRequest("source");
-    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false });
+    useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false, totalElapsedMs: 1200 });
     const { result } = renderHook(() => useTranslationController());
 
     try {

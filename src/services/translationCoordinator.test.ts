@@ -164,7 +164,7 @@ success: () => {
         const id = useTranslationStore.getState().startRequest("source");
         useTranslationStore
           .getState()
-          .succeedRequest(id, { translatedText: "译文", fromCache: false });
+          .succeedRequest(id, { translatedText: "译文", fromCache: false, totalElapsedMs: 1200 });
       },
       streaming: () => {
         const id = useTranslationStore.getState().startRequest("source");
@@ -251,6 +251,7 @@ mockedRunTranslationRequest.mockImplementation(async (requestId, text) => {
         .succeedRequest(requestId, {
           translatedText: `译文(${text})`,
           fromCache: false,
+          totalElapsedMs: 1200,
         });
     });
 
@@ -277,7 +278,7 @@ mockedRunTranslationRequest.mockImplementation(async (requestId, text) => {
 expect(
       useTranslationStore
         .getState()
-        .succeedRequest(requestIds[0], { translatedText: "迟到", fromCache: false }),
+        .succeedRequest(requestIds[0], { translatedText: "迟到", fromCache: false, totalElapsedMs: 1 }),
     ).toBe(false);
   });
 });

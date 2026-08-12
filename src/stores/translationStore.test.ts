@@ -4,8 +4,8 @@ import {
   useTranslationStore,
 } from "./translationStore";
 
-const cachedResult = { translatedText: "缓存译文", fromCache: true };
-const freshResult = { translatedText: "新译文", fromCache: false };
+const cachedResult = { translatedText: "缓存译文", fromCache: true, totalElapsedMs: 8 };
+const freshResult = { translatedText: "新译文", fromCache: false, totalElapsedMs: 1200 };
 
 describe("translationStore streaming state", () => {
   beforeEach(() => useTranslationStore.getState().reset());
@@ -102,6 +102,84 @@ describe("translationStore streaming state", () => {
   });
 });
 
+describe("translationStore request progress", () => {
+  beforeEach(() => useTranslationStore.getState().reset());
+
+  it("accepts only current, increasing, non-backward phase events", () => {
+    const requestId = useTranslationStore.getState().startRequest("source");
+    const checking = {
+      type: "phaseChanged" as const,
+      requestId,
+      sequence: 1,
+      phase: "checkingCache" as const,
+      totalElapsedMs: 12,
+    };
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, checking),
+    ).toBe(true);
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, checking),
+    ).toBe(false);
+
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, {
+        ...checking,
+        sequence: 2,
+        phase: "connectingBackend",
+        totalElapsedMs: 120,
+        backend: { mode: "officialApi", provider: "deepseek" },
+      }),
+    ).toBe(true);
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, {
+        ...checking,
+        sequence: 3,
+        phase: "preparingRequest",
+        totalElapsedMs: 130,
+      }),
+    ).toBe(false);
+    expect(useTranslationStore.getState()).toMatchObject({
+      progressPhase: "connectingBackend",
+      progressSequence: 2,
+      totalElapsedMs: 120,
+    });
+  });
+
+  it("resets a same-phase retry and keeps only the Rust terminal duration", () => {
+    const requestId = useTranslationStore.getState().startRequest("source");
+    const event = {
+      type: "phaseChanged" as const,
+      requestId,
+      sequence: 1,
+      phase: "connectingBackend" as const,
+      totalElapsedMs: 100,
+      backend: { mode: "webGateway" as const, provider: "qwen" },
+    };
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, event),
+    ).toBe(true);
+    expect(
+      useTranslationStore.getState().applyProgressPhase(requestId, {
+        ...event,
+        sequence: 2,
+        totalElapsedMs: 800,
+      }),
+    ).toBe(true);
+
+    useTranslationStore.getState().succeedRequest(requestId, {
+      translatedText: "译文",
+      fromCache: false,
+      totalElapsedMs: 14600,
+    });
+    expect(useTranslationStore.getState()).toMatchObject({
+      progressPhase: null,
+      progressSequence: null,
+      totalElapsedMs: 14600,
+      status: "success",
+    });
+  });
+});
+
 describe("translationStore failCapture", () => {
   beforeEach(() => useTranslationStore.getState().reset());
 
@@ -127,7 +205,7 @@ describe("translationStore failCapture", () => {
     expect(
       useTranslationStore
         .getState()
-        .succeedRequest(requestId, { translatedText: "迟到", fromCache: false }),
+        .succeedRequest(requestId, { translatedText: "迟到", fromCache: false, totalElapsedMs: 1 }),
     ).toBe(false);
     expect(
       useTranslationStore.getState().appendTranslationDelta(requestId, "迟到"),

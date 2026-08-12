@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::app_error::{AppError, AppResult};
 use crate::commands::config::AppState;
-use crate::translation_backend::models::BackendProgress;
 use crate::translation_backend::{
-    BackendMode, BackendRequest, TranslationBackend, TranslationOptions, TranslationProgress,
+    BackendMode, BackendRequest, PhaseProgress, ProgressBackendSource, TranslationBackend,
+    TranslationOptions, TranslationPhase, TranslationProgress, TranslationProgressReporter,
 };
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
@@ -28,7 +28,17 @@ pub struct TranslationRequestManager {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "type")]
-pub enum TranslationStreamEvent {
+pub enum TranslationProgressEvent {
+    PhaseChanged {
+        #[serde(rename = "requestId")]
+        request_id: String,
+        sequence: u64,
+        phase: TranslationPhase,
+        #[serde(rename = "totalElapsedMs")]
+        total_elapsed_ms: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        backend: Option<ProgressBackendSource>,
+    },
     ContentDelta {
         #[serde(rename = "requestId")]
         request_id: String,
@@ -38,22 +48,55 @@ pub enum TranslationStreamEvent {
 
 struct ChannelProgress {
     request_id: String,
-    channel: Channel<TranslationStreamEvent>,
+    channel: Channel<TranslationProgressEvent>,
 }
 
 impl TranslationProgress for ChannelProgress {
-    fn emit(
-        &self,
-        progress: BackendProgress,
-    ) -> Result<(), crate::translation_backend::BackendError> {
-        match progress {
-            BackendProgress::ContentDelta(delta) => self
-                .channel
-                .send(TranslationStreamEvent::ContentDelta {
-                    request_id: self.request_id.clone(),
-                    delta,
-                })
-                .map_err(|_| crate::translation_backend::BackendError::Cancelled),
+    fn phase_changed(&self, progress: PhaseProgress) {
+        if self
+            .channel
+            .send(TranslationProgressEvent::PhaseChanged {
+                request_id: self.request_id.clone(),
+                sequence: progress.sequence,
+                phase: progress.phase,
+                total_elapsed_ms: progress.total_elapsed_ms,
+                backend: progress.backend,
+            })
+            .is_err()
+        {
+            log::warn!(
+                "translation_progress_phase_send_failed: phase={:?} sequence={}",
+                progress.phase,
+                progress.sequence
+            );
+        }
+    }
+
+    fn content_delta(&self, delta: String) -> Result<(), crate::translation_backend::BackendError> {
+        self.channel
+            .send(TranslationProgressEvent::ContentDelta {
+                request_id: self.request_id.clone(),
+                delta,
+            })
+            .map_err(|_| crate::translation_backend::BackendError::Cancelled)
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranslationCommandError {
+    kind: &'static str,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_elapsed_ms: Option<u64>,
+}
+
+impl TranslationCommandError {
+    fn from_app(error: AppError, total_elapsed_ms: Option<u64>) -> Self {
+        Self {
+            kind: error.kind_str(),
+            message: error.to_string(),
+            total_elapsed_ms,
         }
     }
 }
@@ -119,43 +162,8 @@ impl TranslationRequestManager {
 /// WebGateway 不会自动创建登录窗口或回退到付费 API。
 /// forceRefresh 为 true 时表示"重新翻译"（绕过缓存读取并在成功后覆盖共享缓存）。
 #[tauri::command]
-pub async fn translate_text(
-    state: State<'_, AppState>,
-    request_manager: State<'_, TranslationRequestManager>,
-    backend: State<'_, Arc<TranslationBackend>>,
-    text: String,
-    target_language: String,
-    force_refresh: bool,
-) -> AppResult<crate::llm::models::TranslationResult> {
-    let config = state.snapshot()?;
-    validate_translate_request(&config, &text)?;
-
-    let request = BackendRequest {
-        text,
-        target_language,
-    };
-    let options = TranslationOptions { force_refresh };
-
-    // 提取 Arc<TranslationBackend>，避免 State 的非静态生命周期逃逸到 run_latest 中。
-    let backend = backend.inner().clone();
-    let result = request_manager
-        .run_latest(async move {
-            backend
-                .translate(&config, request, options)
-                .await
-                .map(translate_outcome_to_result)
-                .map_err(AppError::from)
-        })
-        .await?;
-
-    Ok(result)
-}
-
-/// 流式翻译文本：通过每次请求独立的 Tauri Channel 上报正文增量。
-/// 参数数量按 SDD 7.1 合同保持：requestId/text/targetLanguage/forceRefresh/onEvent。
 #[allow(clippy::too_many_arguments)]
-#[tauri::command]
-pub async fn translate_text_stream(
+pub async fn translate_text(
     state: State<'_, AppState>,
     request_manager: State<'_, TranslationRequestManager>,
     backend: State<'_, Arc<TranslationBackend>>,
@@ -163,47 +171,57 @@ pub async fn translate_text_stream(
     text: String,
     target_language: String,
     force_refresh: bool,
-    on_event: Channel<TranslationStreamEvent>,
-) -> AppResult<crate::llm::models::TranslationResult> {
+    on_event: Channel<TranslationProgressEvent>,
+) -> Result<crate::llm::models::TranslationResult, TranslationCommandError> {
     if request_id.trim().is_empty() {
-        return Err(AppError::ConfigInvalid("请求 ID 不能为空".to_string()));
+        return Err(TranslationCommandError::from_app(
+            AppError::ConfigInvalid("请求 ID 不能为空".to_string()),
+            None,
+        ));
     }
-
-    let config = state.snapshot()?;
-    validate_translate_request(&config, &text)?;
+    let config = state
+        .snapshot()
+        .map_err(|error| TranslationCommandError::from_app(error, None))?;
+    validate_translate_request(&config, &text)
+        .map_err(|error| TranslationCommandError::from_app(error, None))?;
 
     let request = BackendRequest {
         text,
         target_language,
     };
     let options = TranslationOptions { force_refresh };
-    let backend = backend.inner().clone();
-    let progress: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
+    let sink: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
         request_id,
         channel: on_event,
     });
+    let progress = Arc::new(TranslationProgressReporter::new(sink));
+    let timing = Arc::clone(&progress);
 
-    let result = request_manager
+    // 提取 Arc<TranslationBackend>，避免 State 的非静态生命周期逃逸到 run_latest 中。
+    let backend = backend.inner().clone();
+    let outcome = request_manager
         .run_latest(async move {
             backend
-                .translate_stream(&config, request, options, progress)
+                .translate(&config, request, options, progress)
                 .await
-                .map(translate_outcome_to_result)
                 .map_err(AppError::from)
         })
-        .await?;
+        .await
+        .map_err(|error| TranslationCommandError::from_app(error, Some(timing.elapsed_ms())))?;
 
-    Ok(result)
+    Ok(translate_outcome_to_result(outcome, timing.elapsed_ms()))
 }
 
 /// 把统一 outcome 映射为前端命令结果；只有 L1/L2 命中时 fromCache 为 true。
 fn translate_outcome_to_result(
     outcome: crate::translation_backend::TranslationOutcome,
+    total_elapsed_ms: u64,
 ) -> crate::llm::models::TranslationResult {
     let from_cache = outcome.is_from_cache();
     crate::llm::models::TranslationResult {
         translated_text: outcome.result.translated_text,
         from_cache,
+        total_elapsed_ms,
     }
 }
 
@@ -271,11 +289,10 @@ mod tests {
     use std::future::pending;
     use std::sync::Arc;
 
+    use super::TranslationProgressEvent;
     use super::TranslationRequestManager;
-    use super::TranslationStreamEvent;
     use super::{ChannelProgress, TranslationProgress};
     use crate::app_error::AppError;
-    use crate::translation_backend::models::BackendProgress;
     use crate::translation_backend::BackendError;
 
     #[test]
@@ -314,7 +331,7 @@ mod tests {
 
     #[test]
     fn stream_event_serializes_with_frontend_contract() {
-        let event = TranslationStreamEvent::ContentDelta {
+        let event = TranslationProgressEvent::ContentDelta {
             request_id: "req_test".to_string(),
             delta: "你好".to_string(),
         };
@@ -338,7 +355,7 @@ mod tests {
         };
 
         let error = progress
-            .emit(BackendProgress::ContentDelta("delta".to_string()))
+            .content_delta("delta".to_string())
             .expect_err("closed channel must cancel the request");
 
         assert!(matches!(error, BackendError::Cancelled));
@@ -361,10 +378,33 @@ mod tests {
             cache_status: CacheStatus::Miss,
         };
 
-        let result = super::translate_outcome_to_result(outcome);
+        let result = super::translate_outcome_to_result(outcome, 37);
         let json = serde_json::to_value(&result).expect("result should serialize");
 
         assert_eq!(json["translatedText"], "你好");
         assert_eq!(json["fromCache"], false);
+        assert_eq!(json["totalElapsedMs"], 37);
+    }
+
+    #[test]
+    fn phase_event_serializes_with_frontend_contract() {
+        let event = TranslationProgressEvent::PhaseChanged {
+            request_id: "req_test".to_string(),
+            sequence: 2,
+            phase: crate::translation_backend::TranslationPhase::ConnectingBackend,
+            total_elapsed_ms: 1250,
+            backend: Some(crate::translation_backend::ProgressBackendSource {
+                mode: crate::translation_backend::BackendMode::OfficialApi,
+                provider: "deepseek".to_string(),
+            }),
+        };
+        let json = serde_json::to_value(event).expect("event should serialize");
+
+        assert_eq!(json["type"], "phaseChanged");
+        assert_eq!(json["requestId"], "req_test");
+        assert_eq!(json["sequence"], 2);
+        assert_eq!(json["phase"], "connectingBackend");
+        assert_eq!(json["totalElapsedMs"], 1250);
+        assert_eq!(json["backend"]["mode"], "officialApi");
     }
 }

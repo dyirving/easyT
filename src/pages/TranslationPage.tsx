@@ -1,14 +1,14 @@
 import {
   CacheNotice,
   ErrorState,
-  LoadingState,
   OriginalTextPanel,
   TranslationHeader,
   TranslationPanel,
+  TranslationProgress,
   useTranslationController,
 } from "@/components/translation";
 import { StatusBanner } from "@/components/patterns";
-import { Button, Spinner, Textarea } from "@/components/ui";
+import { Button, Textarea } from "@/components/ui";
 
 interface TranslationPageProps {
   onOpenSettings: () => void;
@@ -29,10 +29,27 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
     manualInput,
     originalText,
     pinned,
+    progressBackend,
+    progressPhase,
+    progressPhaseStartedTotalElapsedMs,
+    progressSequence,
+    progressSyncedAtMonotonicMs,
+    progressSyncedTotalElapsedMs,
     refreshErrorMessage,
+    requestStartedAtMonotonicMs,
     status,
     translatedText,
+    totalElapsedMs,
   } = controller;
+  const activeProgress = {
+    phase: progressPhase,
+    sequence: progressSequence,
+    backend: progressBackend,
+    phaseStartedTotalElapsedMs: progressPhaseStartedTotalElapsedMs,
+    syncedTotalElapsedMs: progressSyncedTotalElapsedMs,
+    syncedAtMonotonicMs: progressSyncedAtMonotonicMs,
+    requestStartedAtMonotonicMs,
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -74,14 +91,14 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
           </div>
         ) : null}
 
-        {status === "translating" ? <div className="space-y-3"><OriginalTextPanel text={originalText} /><LoadingState message="正在翻译…" /></div> : null}
-        {status === "streaming" ? <div className="space-y-3"><OriginalTextPanel text={originalText} /><TranslationPanel text={translatedText} mode="streaming" /></div> : null}
+        {status === "translating" ? <div className="space-y-3"><OriginalTextPanel text={originalText} /><TranslationProgress kind="active" snapshot={activeProgress} compact={false} /></div> : null}
+        {status === "streaming" ? <div className="space-y-3"><OriginalTextPanel text={originalText} /><TranslationPanel text={translatedText} mode="streaming" /><TranslationProgress kind="active" snapshot={activeProgress} compact /></div> : null}
         {status === "refreshing" ? (
           <div className="space-y-3">
             <OriginalTextPanel text={originalText} />
             {fromCache ? <CacheNotice /> : null}
             <TranslationPanel text={translatedText} mode="complete" />
-            <p className="flex items-center gap-2 text-xs text-ink-muted"><Spinner size="sm" className="text-accent" />正在重新翻译</p>
+            <TranslationProgress kind="active" snapshot={activeProgress} compact />
           </div>
         ) : null}
         {status === "success" ? (
@@ -90,13 +107,16 @@ export function TranslationPage({ onOpenSettings, onClose }: TranslationPageProp
             {fromCache ? <CacheNotice /> : null}
             {refreshErrorMessage ? <StatusBanner tone="danger" announcement="assertive" description={<>重新翻译失败，当前仍显示此前的本机缓存译文。{refreshErrorMessage}</>} /> : null}
             <TranslationPanel text={translatedText} mode="complete" />
+            {totalElapsedMs !== null ? <TranslationProgress kind={refreshErrorMessage ? "failure" : "success"} totalElapsedMs={totalElapsedMs} /> : null}
           </div>
         ) : null}
         {status === "error" ? (
           <div className="space-y-3">
             {originalText ? <OriginalTextPanel text={originalText} /> : null}
             {isPartial && translatedText ? <TranslationPanel text={translatedText} mode="partial" /> : null}
+            {isPartial && totalElapsedMs !== null ? <TranslationProgress kind="interrupted" totalElapsedMs={totalElapsedMs} /> : null}
             <ErrorState message={friendlyError?.friendlyMessage ?? errorMessage ?? "翻译失败"} hint={friendlyError?.hint} onRetry={friendlyError?.retryable && originalText ? controller.retry : undefined} onOpenSettings={onOpenSettings} />
+            {!isPartial && totalElapsedMs !== null ? <TranslationProgress kind="failure" totalElapsedMs={totalElapsedMs} /> : null}
           </div>
         ) : null}
       </div>

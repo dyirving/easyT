@@ -13,6 +13,8 @@ pub struct TranslationResult {
     pub translated_text: String,
     /// 是否来自本机缓存
     pub from_cache: bool,
+    /// 正式翻译请求的 Rust 单调时钟总耗时
+    pub total_elapsed_ms: u64,
 }
 
 #[cfg(test)]
@@ -24,12 +26,14 @@ mod tests {
         let result = TranslationResult {
             translated_text: "你好".to_string(),
             from_cache: false,
+            total_elapsed_ms: 42,
         };
 
         let json = serde_json::to_string(&result).expect("result should serialize");
 
         assert!(json.contains("translatedText"));
         assert!(json.contains("fromCache"));
+        assert!(json.contains("totalElapsedMs"));
         assert!(!json.contains("translated_text"));
     }
 }

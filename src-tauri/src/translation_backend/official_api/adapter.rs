@@ -14,9 +14,10 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AppConfig, ModelProvider};
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{
-    BackendMode, BackendProgress, BackendRequest, BackendResult, BackendSource, TranslationProgress,
+    BackendMode, BackendRequest, BackendResult, BackendSource,
 };
 use crate::translation_backend::prompt::build_system_prompt;
+use crate::translation_backend::{TranslationPhase, TranslationProgressReporter};
 
 use super::sse_decoder::{OpenAiDecodeOutcome, OpenAiSseDecoder};
 
@@ -88,6 +89,7 @@ impl OfficialApiAdapter {
         &self,
         config: &AppConfig,
         request: BackendRequest,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         // 1. 基础校验
         if config.api_key.trim().is_empty() {
@@ -111,6 +113,7 @@ impl OfficialApiAdapter {
             request.text.chars().count()
         );
 
+        progress.phase(TranslationPhase::ConnectingBackend, None);
         let resp = self
             .http_client
             .post(&url)
@@ -127,6 +130,7 @@ impl OfficialApiAdapter {
             let body = resp.text().await.unwrap_or_default();
             return Err(map_status_to_error(status, &body));
         }
+        progress.phase(TranslationPhase::WaitingForContent, None);
 
         // 5. 解析响应
         let parsed: ChatCompletionResponse = resp
@@ -146,6 +150,8 @@ impl OfficialApiAdapter {
             return Err(BackendError::InvalidResponse("译文为空".to_string()));
         }
 
+        progress.phase(TranslationPhase::ReceivingContent, None);
+
         build_backend_result(config, translated_text)
     }
 
@@ -154,7 +160,7 @@ impl OfficialApiAdapter {
         &self,
         config: &AppConfig,
         request: BackendRequest,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         if config.api_key.trim().is_empty() {
             return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
@@ -174,6 +180,7 @@ impl OfficialApiAdapter {
             request.text.chars().count()
         );
 
+        progress.phase(TranslationPhase::ConnectingBackend, None);
         let response = tokio::time::timeout(
             timeout,
             self.http_client
@@ -196,6 +203,8 @@ impl OfficialApiAdapter {
             return Err(map_status_to_error(status, &body));
         }
 
+        progress.phase(TranslationPhase::WaitingForContent, None);
+
         self.consume_sse_stream(response, config, progress).await
     }
 
@@ -203,7 +212,7 @@ impl OfficialApiAdapter {
         &self,
         response: reqwest::Response,
         config: &AppConfig,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         use futures_util::StreamExt;
 
@@ -218,6 +227,7 @@ impl OfficialApiAdapter {
     pub async fn test_connection(
         &self,
         config: &AppConfig,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<crate::translation_backend::BackendHealth, BackendError> {
         if config.api_key.trim().is_empty() {
             return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
@@ -227,14 +237,14 @@ impl OfficialApiAdapter {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
         };
-        let result = self.translate(config, request).await?;
+        let result = self.translate(config, request, progress).await?;
         Ok(crate::translation_backend::BackendHealth::translation_succeeded("连接成功", &result))
     }
 
     pub async fn test_connection_stream(
         &self,
         config: &AppConfig,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<crate::translation_backend::BackendHealth, BackendError> {
         if config.api_key.trim().is_empty() {
             return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
@@ -257,7 +267,7 @@ impl OfficialApiAdapter {
 async fn consume_sse_chunks<S, B>(
     stream: S,
     config: &AppConfig,
-    progress: Arc<dyn TranslationProgress>,
+    progress: Arc<TranslationProgressReporter>,
     timeout: Duration,
 ) -> Result<BackendResult, BackendError>
 where
@@ -286,7 +296,13 @@ where
         for outcome in decoder.feed(&chunk)? {
             match outcome {
                 OpenAiDecodeOutcome::ContentDelta(delta) => {
-                    progress.emit(BackendProgress::ContentDelta(delta.clone()))?;
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    if content.is_empty() {
+                        progress.phase(TranslationPhase::ReceivingContent, None);
+                    }
+                    progress.content_delta(delta.clone())?;
                     content.push_str(&delta);
                     deadline = tokio::time::Instant::now() + timeout;
                 }
@@ -436,22 +452,38 @@ mod tests {
     use futures_util::stream;
 
     use super::*;
+    use crate::translation_backend::{PhaseProgress, TranslationProgress};
 
     #[derive(Default)]
     struct RecordingProgress {
         deltas: Mutex<Vec<String>>,
+        phases: Mutex<Vec<TranslationPhase>>,
         fail: bool,
     }
 
     impl TranslationProgress for RecordingProgress {
-        fn emit(&self, progress: BackendProgress) -> Result<(), BackendError> {
+        fn phase_changed(&self, progress: PhaseProgress) {
+            self.phases
+                .lock()
+                .expect("phases lock")
+                .push(progress.phase);
+        }
+
+        fn content_delta(&self, delta: String) -> Result<(), BackendError> {
             if self.fail {
                 return Err(BackendError::Cancelled);
             }
-            let BackendProgress::ContentDelta(delta) = progress;
             self.deltas.lock().expect("deltas lock").push(delta);
             Ok(())
         }
+    }
+
+    fn reporter(progress: Arc<RecordingProgress>) -> Arc<TranslationProgressReporter> {
+        let reporter = Arc::new(TranslationProgressReporter::new(progress));
+        reporter.phase(TranslationPhase::PreparingRequest, None);
+        reporter.phase(TranslationPhase::ConnectingBackend, None);
+        reporter.phase(TranslationPhase::WaitingForContent, None);
+        reporter
     }
 
     fn test_config() -> AppConfig {
@@ -523,7 +555,7 @@ mod tests {
         let result = consume_sse_chunks(
             chunks,
             &test_config(),
-            progress.clone(),
+            reporter(progress.clone()),
             Duration::from_millis(35),
         )
         .await
@@ -531,6 +563,10 @@ mod tests {
 
         assert_eq!(result.translated_text, "ab");
         assert_eq!(*progress.deltas.lock().unwrap(), vec!["a", "b"]);
+        assert_eq!(
+            progress.phases.lock().unwrap().last(),
+            Some(&TranslationPhase::ReceivingContent)
+        );
     }
 
     #[tokio::test]
@@ -543,7 +579,7 @@ mod tests {
         let error = consume_sse_chunks(
             chunks,
             &test_config(),
-            Arc::new(RecordingProgress::default()),
+            reporter(Arc::new(RecordingProgress::default())),
             Duration::from_millis(30),
         )
         .await
@@ -561,7 +597,7 @@ mod tests {
         let error = consume_sse_chunks(
             chunks,
             &test_config(),
-            Arc::new(RecordingProgress::default()),
+            reporter(Arc::new(RecordingProgress::default())),
             Duration::from_secs(1),
         )
         .await
@@ -577,13 +613,14 @@ mod tests {
         )]);
         let progress = RecordingProgress {
             deltas: Mutex::default(),
+            phases: Mutex::default(),
             fail: true,
         };
 
         let error = consume_sse_chunks(
             chunks,
             &test_config(),
-            Arc::new(progress),
+            reporter(Arc::new(progress)),
             Duration::from_secs(1),
         )
         .await

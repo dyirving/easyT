@@ -5,20 +5,21 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Approved |
-| 版本 | 1.0 |
-| 最后更新 | 2026-08-11 |
+| 版本 | 1.1 |
+| 最后更新 | 2026-08-12 |
 | 适用项目 | easyT 2.x 前端 |
 | canonical 路径 | `docs/UI-Kit需求与架构共识文档.md` |
 | 决策来源 | 项目所有者与架构评审对话 |
-| 实施状态 | 尚未实施 |
+| 实施状态 | 已在 easyT 2.2.0 完成实施并通过验收 |
 
 ### 0.1 修订历史
 
 | 版本 | 日期 | 摘要 |
 |---|---|---|
 | 1.0 | 2026-08-11 | 固定 easyT 内部 UI Kit、视觉语言、module interface、迁移与治理规则 |
+| 1.1 | 2026-08-12 | 记录 easyT 2.2.0 已完成 UI Kit 实施、自动验证与项目负责人最终验收 |
 
-> 本文是 easyT UI Kit 的唯一规范来源。本次工作只固化文档与 Agent 约束，不包含 React、CSS、依赖、测试或功能代码变更。
+> 本文是 easyT UI Kit 的唯一规范来源。UI Kit 已在 easyT 2.2.0 完成实施并通过验收；后续前端变更继续受本文约束。
 
 ## 1. 目标
 
@@ -662,22 +663,22 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
 
 全部满足才算完成：
 
-- [ ] `components/` 根目录只保留四个正式目录。
-- [ ] 现有全部前端页面与领域 module 使用 UI Kit。
-- [ ] pages/领域 module 不直接实现原生 button/input/select/textarea；这些交互元素由 UI module implementation 拥有。
-- [ ] 不存在 window.confirm 或业务私有 fixed-overlay Dialog。
-- [ ] 不存在全局 .btn/.input 控件 recipe。
-- [ ] 除 tokens、必要遮罩和第三方 KaTeX CSS 外无新增实际颜色值。
-- [ ] 跨目录 import 通过对应 index.ts seam。
-- [ ] ui/patterns 不依赖 Zustand、Tauri Command、AppConfig 或领域类型。
-- [ ] 原始 invoke 只存在于统一 service 层。
-- [ ] TranslationPage、SettingsPage、App 及现有业务行为保持。
-- [ ] 默认与最小窗口截图符合视觉基线。
-- [ ] 差异只来自批准的一致性、布局和无障碍修复。
-- [ ] UI interface、领域回归、typecheck、前端 build、Rust test 和 release build 通过。
-- [ ] JS/CSS bundle 变化符合预算或有批准说明。
-- [ ] 旧路径、旧 recipe、旧浅测试和临时兼容代码已删除。
-- [ ] 最终报告包含迁移映射、验证证据、视觉差异、体积变化和任何偏差。
+- [x] `components/` 根目录只保留四个正式目录。
+- [x] 现有全部前端页面与领域 module 使用 UI Kit。
+- [x] pages/领域 module 不直接实现原生 button/input/select/textarea；这些交互元素由 UI module implementation 拥有。
+- [x] 不存在 window.confirm 或业务私有 fixed-overlay Dialog。
+- [x] 不存在全局 .btn/.input 控件 recipe。
+- [x] 除 tokens、必要遮罩和第三方 KaTeX CSS 外无新增实际颜色值。
+- [x] 跨目录 import 通过对应 index.ts seam。
+- [x] ui/patterns 不依赖 Zustand、Tauri Command、AppConfig 或领域类型。
+- [x] 原始 invoke 只存在于统一 service 层。
+- [x] TranslationPage、SettingsPage、App 及现有业务行为保持。
+- [x] 默认与最小窗口截图符合视觉基线。
+- [x] 差异只来自批准的一致性、布局和无障碍修复。
+- [x] UI interface、领域回归、typecheck、前端 build、Rust test 和 release build 通过。
+- [x] JS/CSS bundle 变化符合预算或有批准说明。
+- [x] 旧路径、旧 recipe、旧浅测试和临时兼容代码已删除。
+- [x] 最终报告包含迁移映射、验证证据、视觉差异、体积变化和任何偏差。
 
 ## 18. Agent 执行清单
 
@@ -695,4 +696,3 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
 10. 报告视觉与 bundle 变化。
 
 如果需求与本文冲突，Agent 必须停止受影响部分、给出代码与文档证据，并请求项目所有者决定；不得静默偏离。
-

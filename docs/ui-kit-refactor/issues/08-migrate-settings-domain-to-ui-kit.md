@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-006, FR-007, FR-009 and Phase 5.
@@ -34,3 +36,5 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-006
 - 新增设置项或重新设计设置页。
 
 ## Comments
+
+- 2026-08-12: 设置领域迁移及现有业务回归已由项目负责人验收，本工单归档为 completed。

@@ -36,6 +36,7 @@ describe("TranslationPage copy state", () => {
       .succeedRequest(requestId, {
         translatedText: "complete",
         fromCache: false,
+        totalElapsedMs: 1200,
       });
 
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
@@ -105,6 +106,7 @@ describe("TranslationPage refresh intent", () => {
       .succeedRequest(requestId, {
         translatedText: "译文",
         fromCache: true,
+        totalElapsedMs: 8,
       });
 
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
@@ -152,6 +154,7 @@ describe("TranslationPage refresh intent", () => {
       .succeedRequest(firstId, {
         translatedText: "缓存译文",
         fromCache: true,
+        totalElapsedMs: 8,
       });
     const { unmount } = render(
       <TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />,
@@ -162,7 +165,7 @@ describe("TranslationPage refresh intent", () => {
     useTranslationStore.getState().startRequest("source", true);
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);
 
-    expect(screen.getByText("正在重新翻译")).toBeInTheDocument();
+    expect(screen.getByText("正在处理翻译请求")).toBeInTheDocument();
     expect(
       screen.getByText(/此译文来自本机缓存，点击“重新翻译”/),
     ).toBeInTheDocument();
@@ -176,6 +179,7 @@ describe("TranslationPage refresh intent", () => {
       .succeedRequest(firstId, {
         translatedText: "缓存译文",
         fromCache: true,
+        totalElapsedMs: 8,
       });
     const refreshId = useTranslationStore
       .getState()
@@ -199,6 +203,7 @@ describe("TranslationPage refresh intent", () => {
       .succeedRequest(requestId, {
         translatedText: "缓存译文",
         fromCache: true,
+        totalElapsedMs: 8,
       });
 
     render(<TranslationPage onOpenSettings={vi.fn()} onClose={vi.fn()} />);

@@ -18,6 +18,18 @@ export type TranslationStatus =
   | "success"
   | "error";
 
+export type TranslationPhase =
+  | "checkingCache"
+  | "preparingRequest"
+  | "connectingBackend"
+  | "waitingForContent"
+  | "receivingContent";
+
+export interface TranslationProgressBackend {
+  mode: BackendMode;
+  provider: string;
+}
+
 /**
  * 前端翻译状态
  * errorKind 用于查表得到友好文案与可重试标识
@@ -35,6 +47,14 @@ export interface TranslationState {
   fromCache: boolean;
   /** 重新翻译失败时的独立错误提示，保留旧缓存译文 */
   refreshErrorMessage: string | null;
+  progressPhase: TranslationPhase | null;
+  progressSequence: number | null;
+  progressBackend: TranslationProgressBackend | null;
+  progressPhaseStartedTotalElapsedMs: number | null;
+  progressSyncedTotalElapsedMs: number | null;
+  progressSyncedAtMonotonicMs: number | null;
+  requestStartedAtMonotonicMs: number | null;
+  totalElapsedMs: number | null;
   pinned: boolean;
 }
 

@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md)
@@ -35,3 +37,4 @@ Product and visual consensus: [UI-Kit需求与架构共识文档.md](../../UI-Ki
 
 - 2026-08-11: ticket 创建时 SDD 状态为 `In Review`，代码实施仍未授权。
 - 2026-08-11: 项目负责人明确回复“批准”。SDD 升级为 `Approved` v0.2，后续 UI Kit 工单可按既定范围开始；未批准任何口头偏差或新增依赖。
+- 2026-08-12: UI Kit 最终验收通过，本工单随完整实施链路归档为 completed。

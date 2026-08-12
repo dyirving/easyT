@@ -24,8 +24,9 @@ export async function runTranslationRequest(
       requestId,
       text,
       targetLanguage: config.targetLanguage,
-      streamOutput: config.streamOutput,
       forceRefresh,
+      onPhaseChanged: (event) =>
+        useTranslationStore.getState().applyProgressPhase(requestId, event),
       onContentDelta: deltaBuffer?.append,
     });
     deltaBuffer?.flush();
@@ -40,6 +41,7 @@ export async function runTranslationRequest(
         requestId,
         commandError.message,
         commandError.kind,
+        commandError.totalElapsedMs,
       );
       return;
     }
@@ -52,6 +54,7 @@ export async function runTranslationRequest(
         commandError.kind !== ERROR_KIND.BackendCancelled &&
         current.isActiveRequest(requestId) &&
         !!current.translatedText,
+      commandError.totalElapsedMs,
     );
   } finally {
     deltaBuffer?.dispose();

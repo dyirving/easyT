@@ -1,7 +1,10 @@
 // 翻译状态管理
 import { create } from "zustand";
 import { type ErrorKind, type TranslationState } from "@/types";
-import { type TranslationResult } from "@/services/tauriCommands";
+import {
+  type PhaseChangedEvent,
+  type TranslationResult,
+} from "@/services/tauriCommands";
 
 interface TranslationStore extends TranslationState {
   /** 切换固定状态 */
@@ -22,6 +25,8 @@ interface TranslationStore extends TranslationState {
   succeedRequest: (requestId: string, result: TranslationResult) => boolean;
   /** 仅当 requestId 仍是最新请求时追加正文增量 */
   appendTranslationDelta: (requestId: string, delta: string) => boolean;
+  /** 接受当前请求严格递增的真实后端阶段。 */
+  applyProgressPhase: (requestId: string, event: PhaseChangedEvent) => boolean;
   /** 仅当 requestId 仍是最新请求时写入错误结果 */
   failRequest: (
     requestId: string,
@@ -29,12 +34,14 @@ interface TranslationStore extends TranslationState {
     kind?: ErrorKind,
     originalText?: string,
     preservePartial?: boolean,
+    totalElapsedMs?: number,
   ) => boolean;
   /** 重新翻译失败：仍是最新请求且处于 refreshing 时回退到旧缓存译文 */
   failRefreshRequest: (
     requestId: string,
     message: string,
     kind?: ErrorKind,
+    totalElapsedMs?: number,
   ) => boolean;
   /** 清除成功：保留当前译文，只移除缓存来源提示 */
   clearCacheSourceNotice: () => void;
@@ -55,7 +62,33 @@ const initialState: TranslationState = {
   isPartial: false,
   fromCache: false,
   refreshErrorMessage: null,
+  progressPhase: null,
+  progressSequence: null,
+  progressBackend: null,
+  progressPhaseStartedTotalElapsedMs: null,
+  progressSyncedTotalElapsedMs: null,
+  progressSyncedAtMonotonicMs: null,
+  requestStartedAtMonotonicMs: null,
+  totalElapsedMs: null,
   pinned: false,
+};
+
+const phaseRank = {
+  checkingCache: 0,
+  preparingRequest: 1,
+  connectingBackend: 2,
+  waitingForContent: 3,
+  receivingContent: 4,
+} as const;
+
+const clearedActiveProgress = {
+  progressPhase: null,
+  progressSequence: null,
+  progressBackend: null,
+  progressPhaseStartedTotalElapsedMs: null,
+  progressSyncedTotalElapsedMs: null,
+  progressSyncedAtMonotonicMs: null,
+  requestStartedAtMonotonicMs: null,
 };
 
 export const useTranslationStore = create<TranslationStore>((set, get) => ({
@@ -81,6 +114,9 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       errorKind: null,
       refreshErrorMessage: null,
       isPartial: false,
+      ...clearedActiveProgress,
+      requestStartedAtMonotonicMs: performance.now(),
+      totalElapsedMs: null,
     });
     return requestId;
   },
@@ -95,6 +131,8 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       isPartial: false,
       fromCache: false,
       refreshErrorMessage: null,
+      ...clearedActiveProgress,
+      totalElapsedMs: null,
     });
   },
   appendTranslationDelta: (requestId, delta) => {
@@ -115,6 +153,34 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
     }));
     return true;
   },
+  applyProgressPhase: (requestId, event) => {
+    const current = get();
+    if (
+      current.requestId !== requestId ||
+      !Number.isInteger(event.sequence) ||
+      event.sequence <= 0 ||
+      !Number.isFinite(event.totalElapsedMs) ||
+      event.totalElapsedMs < 0 ||
+      (current.progressSequence !== null &&
+        event.sequence <= current.progressSequence) ||
+      (current.progressPhase !== null &&
+        phaseRank[event.phase] < phaseRank[current.progressPhase])
+    ) {
+      return false;
+    }
+    const syncedAt = performance.now();
+    set({
+      progressPhase: event.phase,
+      progressSequence: event.sequence,
+      progressBackend:
+        event.phase === "checkingCache" ? null : (event.backend ?? null),
+      progressPhaseStartedTotalElapsedMs: event.totalElapsedMs,
+      progressSyncedTotalElapsedMs: event.totalElapsedMs,
+      progressSyncedAtMonotonicMs: syncedAt,
+      totalElapsedMs: event.totalElapsedMs,
+    });
+    return true;
+  },
   succeedRequest: (requestId, result) => {
     if (get().requestId !== requestId) return false;
     set({
@@ -123,10 +189,19 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       isPartial: false,
       fromCache: result.fromCache,
       refreshErrorMessage: null,
+      ...clearedActiveProgress,
+      totalElapsedMs: result.totalElapsedMs,
     });
     return true;
   },
-  failRequest: (requestId, message, kind, originalText, preservePartial = false) => {
+  failRequest: (
+    requestId,
+    message,
+    kind,
+    originalText,
+    preservePartial = false,
+    totalElapsedMs,
+  ) => {
     if (get().requestId !== requestId) return false;
     set({
       originalText: originalText ?? get().originalText,
@@ -137,10 +212,12 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       isPartial: preservePartial && get().translatedText.length > 0,
       fromCache: false,
       refreshErrorMessage: null,
+      ...clearedActiveProgress,
+      totalElapsedMs: totalElapsedMs ?? null,
     });
     return true;
   },
-  failRefreshRequest: (requestId, message, _kind) => {
+  failRefreshRequest: (requestId, message, _kind, totalElapsedMs) => {
     const current = get();
     if (current.requestId !== requestId || current.status !== "refreshing") {
       return false;
@@ -150,6 +227,8 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       errorMessage: null,
       errorKind: null,
       refreshErrorMessage: message,
+      ...clearedActiveProgress,
+      totalElapsedMs: totalElapsedMs ?? null,
     });
     return true;
   },

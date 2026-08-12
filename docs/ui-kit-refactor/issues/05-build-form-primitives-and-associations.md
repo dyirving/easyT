@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-002, FR-003 and Phase 2.
@@ -34,3 +36,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-002
 ## Comments
 
 - 2026-08-11：新增内部 FormField context、Textarea、native Select 和 FormControls 行为测试；Input/Switch 改为消费 context，并保留独立使用与原生 ref。Switch 的旧 Label 导出已删除；仍被 SettingsPage 使用的 Field 保留至领域迁移工单。全量验证通过：9 files / 53 tests、typecheck、build；未新增依赖或 UI 层 forbidden import。
+- 2026-08-12: UI Kit 最终验收通过，本工单归档为 completed。

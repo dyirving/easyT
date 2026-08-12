@@ -17,21 +17,22 @@ pub mod cache;
 pub mod error;
 pub mod models;
 pub mod official_api;
+pub mod progress;
 pub mod prompt;
 pub mod web_gateway;
 
 pub use cache::entry::{CachePolicy, CacheStatus, TranslationOutcome};
 pub use error::BackendError;
-pub use models::{
-    BackendMode, BackendRequest, BackendResult, TranslationOptions, TranslationProgress,
+pub use models::{BackendMode, BackendRequest, BackendResult, TranslationOptions};
+pub use progress::{
+    PhaseProgress, ProgressBackendSource, TranslationPhase, TranslationProgress,
+    TranslationProgressReporter,
 };
 
 use std::future::Future;
 use std::sync::Arc;
 
-use futures_util::FutureExt;
-
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ModelProvider};
 
 use self::cache::{
     is_definitely_oversized, prepare_cache_input, NormalizedCacheInput, TranslationCache,
@@ -56,14 +57,6 @@ impl BackendHealth {
                 result.translated_text.chars().count()
             ),
         }
-    }
-}
-
-struct DiscardProgress;
-
-impl TranslationProgress for DiscardProgress {
-    fn emit(&self, _progress: models::BackendProgress) -> Result<(), BackendError> {
-        Ok(())
     }
 }
 
@@ -99,38 +92,40 @@ impl TranslationBackend {
         config: &AppConfig,
         request: BackendRequest,
         options: TranslationOptions,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
         let policy = resolve_cache_policy(config, options);
         let input = prepare_cache_input(&request.text, &request.target_language);
-        let fetch = match config.backend_mode {
-            BackendMode::OfficialApi => self.official_api.translate(config, request).boxed(),
-            BackendMode::WebGateway => self.web_gateway.translate(config, request).boxed(),
-        };
-        run_translation_with_cache(&self.cache, &input, policy, fetch).await
-    }
-
-    /// 流式翻译入口：只向 progress 报告可见正文，完成后仍返回完整结果。
-    /// 流式取消/部分结果不会到达 `store`（future 被 abort）。
-    pub async fn translate_stream(
-        &self,
-        config: &AppConfig,
-        request: BackendRequest,
-        options: TranslationOptions,
-        progress: std::sync::Arc<dyn TranslationProgress>,
-    ) -> Result<TranslationOutcome, BackendError> {
-        validate_translate_request(&request, config)?;
-        let policy = resolve_cache_policy(config, options);
-        let input = prepare_cache_input(&request.text, &request.target_language);
-        let fetch = match config.backend_mode {
-            BackendMode::OfficialApi => self
-                .official_api
-                .translate_stream(config, request, progress)
-                .boxed(),
-            BackendMode::WebGateway => self
-                .web_gateway
-                .translate_stream(config, request, progress)
-                .boxed(),
+        if policy == CachePolicy::Use && !is_definitely_oversized(&input) {
+            progress.phase(TranslationPhase::CheckingCache, None);
+        }
+        let backend_source = progress_backend_source(config);
+        let progress_for_fetch = Arc::clone(&progress);
+        let fetch = async move {
+            progress_for_fetch.phase(TranslationPhase::PreparingRequest, Some(backend_source));
+            match config.backend_mode {
+                BackendMode::OfficialApi if config.stream_output => {
+                    self.official_api
+                        .translate_stream(config, request, progress_for_fetch)
+                        .await
+                }
+                BackendMode::OfficialApi => {
+                    self.official_api
+                        .translate(config, request, progress_for_fetch)
+                        .await
+                }
+                BackendMode::WebGateway if config.stream_output => {
+                    self.web_gateway
+                        .translate_stream(config, request, progress_for_fetch)
+                        .await
+                }
+                BackendMode::WebGateway => {
+                    self.web_gateway
+                        .translate(config, request, progress_for_fetch)
+                        .await
+                }
+            }
         };
         run_translation_with_cache(&self.cache, &input, policy, fetch).await
     }
@@ -139,20 +134,40 @@ impl TranslationBackend {
     /// WebGateway 模式不得仅检查本地 ticket 存在后返回成功
     pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
         validate_test_connection(config)?;
+        let progress = Arc::new(TranslationProgressReporter::discard());
         match config.backend_mode {
             BackendMode::OfficialApi if config.stream_output => {
                 self.official_api
-                    .test_connection_stream(config, Arc::new(DiscardProgress))
+                    .test_connection_stream(config, progress)
                     .await
             }
-            BackendMode::OfficialApi => self.official_api.test_connection(config).await,
+            BackendMode::OfficialApi => self.official_api.test_connection(config, progress).await,
             BackendMode::WebGateway if config.stream_output => {
                 self.web_gateway
-                    .test_connection_stream(config, Arc::new(DiscardProgress))
+                    .test_connection_stream(config, progress)
                     .await
             }
-            BackendMode::WebGateway => self.web_gateway.test_connection(config).await,
+            BackendMode::WebGateway => self.web_gateway.test_connection(config, progress).await,
         }
+    }
+}
+
+fn progress_backend_source(config: &AppConfig) -> ProgressBackendSource {
+    let provider = match config.backend_mode {
+        BackendMode::WebGateway => "qwen",
+        BackendMode::OfficialApi => match config.provider {
+            ModelProvider::Agnes => "agnes",
+            ModelProvider::Deepseek => "deepseek",
+            ModelProvider::Qwen => "qwen",
+            ModelProvider::Glm => "glm",
+            ModelProvider::Kimi => "kimi",
+            ModelProvider::Doubao => "doubao",
+            ModelProvider::Custom => "custom",
+        },
+    };
+    ProgressBackendSource {
+        mode: config.backend_mode,
+        provider: provider.to_string(),
     }
 }
 

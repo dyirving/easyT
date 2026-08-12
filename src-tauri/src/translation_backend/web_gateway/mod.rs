@@ -13,9 +13,9 @@ use std::sync::Arc;
 use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{
-    BackendMode, BackendRequest, BackendResult, TranslationProgress, WebProviderKind,
+    BackendMode, BackendRequest, BackendResult, WebProviderKind,
 };
-use crate::translation_backend::BackendHealth;
+use crate::translation_backend::{BackendHealth, TranslationProgressReporter};
 
 use self::qwen::QwenWebAdapter;
 
@@ -48,10 +48,11 @@ impl WebGateway {
         &self,
         config: &AppConfig,
         request: BackendRequest,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         match config.web_gateway.provider {
             WebProviderKind::Qwen => {
-                let mut result = self.qwen.translate(config, request).await?;
+                let mut result = self.qwen.translate(config, request, progress).await?;
                 // 统一标识为 WebGateway 来源
                 result.source.backend = BackendMode::WebGateway;
                 Ok(result)
@@ -63,7 +64,7 @@ impl WebGateway {
         &self,
         config: &AppConfig,
         request: BackendRequest,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         match config.web_gateway.provider {
             WebProviderKind::Qwen => {
@@ -77,16 +78,20 @@ impl WebGateway {
         }
     }
 
-    pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
+    pub async fn test_connection(
+        &self,
+        config: &AppConfig,
+        progress: Arc<TranslationProgressReporter>,
+    ) -> Result<BackendHealth, BackendError> {
         match config.web_gateway.provider {
-            WebProviderKind::Qwen => self.qwen.test_connection(config).await,
+            WebProviderKind::Qwen => self.qwen.test_connection(config, progress).await,
         }
     }
 
     pub async fn test_connection_stream(
         &self,
         config: &AppConfig,
-        progress: Arc<dyn TranslationProgress>,
+        progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendHealth, BackendError> {
         match config.web_gateway.provider {
             WebProviderKind::Qwen => self.qwen.test_connection_stream(config, progress).await,

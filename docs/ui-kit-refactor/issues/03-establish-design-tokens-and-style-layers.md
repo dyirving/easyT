@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-001, FR-010 and Phase 1.
@@ -33,3 +35,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), FR-001
 ## Comments
 
 - 2026-08-11：新增 `src/styles/tokens.css` 与 `src/styles/base.css`；`src/index.css` 现只负责 tokens/base/KaTeX、Tailwind directives 与 Phase 6 才会移除的旧 recipe。`tailwind.config.js` 全部语义颜色、圆角与 shadow 均映射 CSS variables，补齐 `warning`。唯一性搜索 `rg -n '#[0-9a-fA-F]{3,8}|rgba\\([0-9]|rgb\\([0-9]' src/styles src/index.css tailwind.config.js --glob '*.css' --glob '*.js'` 仅命中 `tokens.css` 内的 soft shadow RGB 值；Tailwind 配置不再含 hex。旧 `.btn/.input/.panel/.translation-markdown` 仍只在 `src/index.css`，作为后续组件迁移的清理清单，未新增使用点。常态页面视觉值与基线一致；新增的 `:focus-visible` 轮廓及 reduced-motion 规则是 SDD 要求的无障碍行为，不改变未聚焦的默认或最小窗口视觉。`npm run typecheck`、`npm test`（7 files / 46 tests）与 `npm run build` 均通过；CSS gzip 从 12,300 B 到 12,830 B（+530 B），低于 5 KiB 预算。
+- 2026-08-12: UI Kit 最终验收通过，本工单归档为 completed。

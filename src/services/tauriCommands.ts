@@ -7,6 +7,8 @@ import {
   type CacheStats,
   type ErrorKind,
   type QwenSessionStatus,
+  type TranslationPhase,
+  type TranslationProgressBackend,
   type WebProviderKind,
   ERROR_KIND,
 } from "@/types";
@@ -15,6 +17,7 @@ import {
 export interface CommandError {
   kind: ErrorKind;
   message: string;
+  totalElapsedMs?: number;
 }
 
 /**
@@ -56,8 +59,8 @@ export interface TranslateTextRequest {
   requestId: string;
   text: string;
   targetLanguage: string;
-  streamOutput: boolean;
   forceRefresh: boolean;
+  onPhaseChanged: (event: PhaseChangedEvent) => void;
   onContentDelta?: (delta: string) => void;
 }
 
@@ -65,36 +68,37 @@ export interface TranslationResult {
   translatedText: string;
   /** 是否来自本机缓存；未接入缓存时始终为 false */
   fromCache: boolean;
+  totalElapsedMs: number;
 }
 
-interface TranslationStreamEvent {
+export interface PhaseChangedEvent {
+  type: "phaseChanged";
+  requestId: string;
+  sequence: number;
+  phase: TranslationPhase;
+  totalElapsedMs: number;
+  backend?: TranslationProgressBackend;
+}
+
+type TranslationProgressEvent = PhaseChangedEvent | {
   type: "contentDelta";
   requestId: string;
   delta: string;
-}
+};
 
 export async function translateText(
   request: TranslateTextRequest,
 ): Promise<TranslationResult> {
-  if (!request.streamOutput) {
-    return invoke<TranslationResult>("translate_text", {
-      text: request.text,
-      targetLanguage: request.targetLanguage,
-      forceRefresh: request.forceRefresh,
-    });
-  }
-
-  if (!request.onContentDelta) {
-    throw new Error("流式翻译缺少正文增量回调");
-  }
-
-  const onContentDelta = request.onContentDelta;
-  const channel = new Channel<TranslationStreamEvent>((event) => {
+  const channel = new Channel<TranslationProgressEvent>((event) => {
     if (event.requestId !== request.requestId) return;
-    onContentDelta(event.delta);
+    if (event.type === "phaseChanged") {
+      request.onPhaseChanged(event);
+    } else {
+      request.onContentDelta?.(event.delta);
+    }
   });
 
-  return invoke<TranslationResult>("translate_text_stream", {
+  return invoke<TranslationResult>("translate_text", {
     requestId: request.requestId,
     text: request.text,
     targetLanguage: request.targetLanguage,
@@ -188,7 +192,14 @@ export function toCommandError(e: unknown): CommandError {
   if (e && typeof e === "object" && "kind" in e && "message" in e) {
     const kind = (e as { kind: string }).kind as ErrorKind;
     const message = (e as { message: string }).message;
-    return { kind, message };
+    const rawElapsed = (e as { totalElapsedMs?: unknown }).totalElapsedMs;
+    const totalElapsedMs =
+      typeof rawElapsed === "number" &&
+      Number.isFinite(rawElapsed) &&
+      rawElapsed >= 0
+        ? rawElapsed
+        : undefined;
+    return { kind, message, totalElapsedMs };
   }
   return {
     kind: ERROR_KIND.Internal,

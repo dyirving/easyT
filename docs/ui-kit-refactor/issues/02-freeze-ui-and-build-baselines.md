@@ -2,6 +2,8 @@
 
 Status: ready-for-human
 
+Resolution: completed
+
 ## Source
 
 Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), Phase 0 and FR-011.
@@ -34,3 +36,4 @@ Canonical design: [SDD-ui-kit-refactor.md](../../SDD-ui-kit-refactor.md), Phase 
 
 - 2026-08-11：已写入 [基线说明](../../ui-kit/baselines/README.md) 与 [构建及静态清单](../../ui-kit/baselines/build-and-inventory.md)。`npm run typecheck`、`npm test`（7 files / 46 tests）和 `npm run build` 均通过。已补入 idle 默认与 Qwen 设置的 `520×390` 截图（125% 缩放下为 649×488 像素）。截图项仍未完成：还需补采 FR-011 的其余状态和最小尺寸，再由人工确认基线。
 - 2026-08-11：项目负责人明确确认“全部设置已完成”，并要求以人工验证完结 02 工单。FR-011 的全部状态、非敏感数据约束和视觉基线充分性均已由项目负责人验收；不再要求补交其余截图文件。
+- 2026-08-12: UI Kit 最终验收通过，本工单归档为 completed。

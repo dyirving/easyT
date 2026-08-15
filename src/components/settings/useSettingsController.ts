@@ -152,14 +152,9 @@ export function useSettingsController() {
   const test = async () => {
     setTesting("testing");
     setTestMessage(null);
-    try {
-      const result = await testApiConnection(config);
-      setTesting(result.ok ? "ok" : "fail");
-      setTestMessage(result.message);
-    } catch (error) {
-      setTesting("fail");
-      setTestMessage(toCommandError(error).message);
-    }
+    const result = await testApiConnection(config);
+    setTesting(result.ok ? "ok" : "fail");
+    setTestMessage(result.message);
   };
 
   const beginLogin = async () => {

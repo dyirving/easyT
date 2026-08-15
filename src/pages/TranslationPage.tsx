@@ -95,6 +95,16 @@ export function TranslationPage({
     status === "error" && requestId === null && !originalText;
   const offerManualTranslation =
     history.summaries.length === 0 || captureFailedWithoutText;
+  const originalSection = (
+    <Collapsible
+      open={originalOpen}
+      onOpenChange={setOriginalOpen}
+      title="原文"
+      summary={originalText.slice(0, 160)}
+    >
+      <OriginalTextPanel text={originalText} bare />
+    </Collapsible>
+  );
 
   return (
     <div className="flex h-full flex-col">
@@ -175,10 +185,8 @@ export function TranslationPage({
                 top
                 summary={topPersisted}
                 body={topPersistedBody}
-                open
                 loading={history.loadingEntryIds.includes(topPersisted.entryId)}
                 pendingAction={history.pendingActionById[topPersisted.entryId]}
-                onOpenChange={() => undefined}
                 onCopy={() => void controller.copyEntry(topPersisted.entryId, false)}
                 onCopyAll={() => void controller.copyEntry(topPersisted.entryId, true)}
                 onRetranslate={() =>
@@ -189,14 +197,7 @@ export function TranslationPage({
 
             {status === "translating" ? (
               <div className="space-y-3">
-                <Collapsible
-                  open={originalOpen}
-                  onOpenChange={setOriginalOpen}
-                  title="原文"
-                  summary={originalText.slice(0, 160)}
-                >
-                  <OriginalTextPanel text={originalText} bare />
-                </Collapsible>
+                {originalSection}
                 <TranslationProgress
                   kind="active"
                   snapshot={activeProgress}
@@ -206,14 +207,7 @@ export function TranslationPage({
             ) : null}
             {status === "streaming" ? (
               <div className="space-y-3">
-                <Collapsible
-                  open={originalOpen}
-                  onOpenChange={setOriginalOpen}
-                  title="原文"
-                  summary={originalText.slice(0, 160)}
-                >
-                  <OriginalTextPanel text={originalText} bare />
-                </Collapsible>
+                {originalSection}
                 <TranslationPanel text={translatedText} mode="streaming" />
                 <TranslationProgress
                   kind="active"
@@ -236,14 +230,7 @@ export function TranslationPage({
             ) : null}
             {status === "success" ? (
               <div className="space-y-3">
-                <Collapsible
-                  open={originalOpen}
-                  onOpenChange={setOriginalOpen}
-                  title="原文"
-                  summary={originalText.slice(0, 160)}
-                >
-                  <OriginalTextPanel text={originalText} bare />
-                </Collapsible>
+                {originalSection}
                 {fromCache ? <CacheNotice /> : null}
                 {refreshErrorMessage ? (
                   <StatusBanner

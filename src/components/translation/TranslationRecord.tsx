@@ -10,18 +10,21 @@ import { TranslationPanel } from "./TranslationPanel";
 import { TranslationProgress } from "./TranslationProgress";
 import { formatHistoryTime } from "./historyFormatting";
 
-interface TranslationRecordProps {
+interface TranslationRecordContentProps {
   summary: TranslationHistorySummary;
   body?: TranslationHistoryEntry;
-  open: boolean;
-  top?: boolean;
   loading?: boolean;
   pendingAction?: "copy" | "copyAll" | "retranslate";
-  onOpenChange(open: boolean): void;
   onCopy(): void;
   onCopyAll(): void;
   onRetranslate(): void;
 }
+
+type TranslationRecordProps = TranslationRecordContentProps &
+  (
+    | { top: true }
+    | { top?: false; open: boolean; onOpenChange(open: boolean): void }
+  );
 
 function RecordContent({
   summary,
@@ -31,7 +34,7 @@ function RecordContent({
   onCopy,
   onCopyAll,
   onRetranslate,
-}: Omit<TranslationRecordProps, "open" | "top" | "onOpenChange">) {
+}: TranslationRecordContentProps) {
   const [originalOpen, setOriginalOpen] = useState(true);
   const [translationOpen, setTranslationOpen] = useState(true);
   useEffect(() => {

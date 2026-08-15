@@ -98,17 +98,13 @@ export function useTranslationController() {
     if (open && !history.bodiesById[entryId]) void loadEntry(entryId);
   };
 
-  const copyEntry = async (entryId: string, all: boolean) => {
-    history.setPendingAction(entryId, all ? "copyAll" : "copy");
+  const copyEntry = async (entryId: string) => {
+    history.setPendingAction(entryId, "copyAll");
     history.setActionError(null);
     try {
       const entry = await loadEntry(entryId);
       if (!entry) return;
-      await writeClipboard(
-        all
-          ? `${entry.originalText}\n\n${entry.translatedText}`
-          : entry.translatedText,
-      );
+      await writeClipboard(`${entry.originalText}\n\n${entry.translatedText}`);
     } catch (error) {
       history.setActionError(toCommandError(error).message);
     } finally {

@@ -14,14 +14,12 @@ interface TranslationHistorySectionProps {
   loadingEntryIds: string[];
   pendingActionById: Record<
     string,
-    "copy" | "copyAll" | "retranslate" | undefined
+    "copyAll" | "retranslate" | undefined
   >;
   clearDisabled: boolean;
   onClear(): void;
   onOpenChange(entryId: string, open: boolean): void;
-  onCopy(entryId: string): void;
   onCopyAll(entryId: string): void;
-  onRetranslate(entryId: string): void;
 }
 
 export function TranslationHistorySection({
@@ -35,9 +33,7 @@ export function TranslationHistorySection({
   clearDisabled,
   onClear,
   onOpenChange,
-  onCopy,
   onCopyAll,
-  onRetranslate,
 }: TranslationHistorySectionProps) {
   if (count === 0) return null;
   return (
@@ -66,9 +62,7 @@ export function TranslationHistorySection({
             loading={loadingEntryIds.includes(summary.entryId)}
             pendingAction={pendingActionById[summary.entryId]}
             onOpenChange={(open) => onOpenChange(summary.entryId, open)}
-            onCopy={() => onCopy(summary.entryId)}
             onCopyAll={() => onCopyAll(summary.entryId)}
-            onRetranslate={() => onRetranslate(summary.entryId)}
           />
         ))}
       </div>

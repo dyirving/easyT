@@ -9,7 +9,7 @@ import type {
 export const DEFAULT_MANUAL_INPUT =
   "Large language models are trained on massive text corpora.";
 
-type PendingHistoryAction = "copy" | "copyAll" | "retranslate";
+type PendingHistoryAction = "copyAll" | "retranslate";
 
 interface TranslationHistoryStore {
   initialization: "loading" | "ready" | "unavailable";

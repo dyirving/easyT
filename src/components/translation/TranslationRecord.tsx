@@ -14,10 +14,8 @@ interface TranslationRecordContentProps {
   summary: TranslationHistorySummary;
   body?: TranslationHistoryEntry;
   loading?: boolean;
-  pendingAction?: "copy" | "copyAll" | "retranslate";
-  onCopy(): void;
+  pendingAction?: "copyAll" | "retranslate";
   onCopyAll(): void;
-  onRetranslate(): void;
 }
 
 type TranslationRecordProps = TranslationRecordContentProps &
@@ -31,9 +29,7 @@ function RecordContent({
   body,
   loading,
   pendingAction,
-  onCopy,
   onCopyAll,
-  onRetranslate,
 }: TranslationRecordContentProps) {
   const [originalOpen, setOriginalOpen] = useState(true);
   const [translationOpen, setTranslationOpen] = useState(true);
@@ -81,29 +77,11 @@ function RecordContent({
         <Button
           size="sm"
           variant="outline"
-          loading={pendingAction === "copy"}
-          loadingLabel="正在复制"
-          onClick={onCopy}
-        >
-          复制译文
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
           loading={pendingAction === "copyAll"}
           loadingLabel="正在复制"
           onClick={onCopyAll}
         >
           全部复制
-        </Button>
-        <Button
-          size="sm"
-          variant="ghost"
-          loading={pendingAction === "retranslate"}
-          loadingLabel="正在读取"
-          onClick={onRetranslate}
-        >
-          使用当前设置重新翻译
         </Button>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-ink-muted">

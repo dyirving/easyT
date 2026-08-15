@@ -187,11 +187,7 @@ export function TranslationPage({
                 body={topPersistedBody}
                 loading={history.loadingEntryIds.includes(topPersisted.entryId)}
                 pendingAction={history.pendingActionById[topPersisted.entryId]}
-                onCopy={() => void controller.copyEntry(topPersisted.entryId, false)}
-                onCopyAll={() => void controller.copyEntry(topPersisted.entryId, true)}
-                onRetranslate={() =>
-                  void controller.retranslateEntry(topPersisted.entryId)
-                }
+                onCopyAll={() => void controller.copyEntry(topPersisted.entryId)}
               />
             ) : null}
 
@@ -314,11 +310,7 @@ export function TranslationPage({
               clearDisabled={isBusy || history.capturePending}
               onClear={history.requestClearConfirmation}
               onOpenChange={controller.toggleHistoryEntry}
-              onCopy={(entryId) => void controller.copyEntry(entryId, false)}
-              onCopyAll={(entryId) => void controller.copyEntry(entryId, true)}
-              onRetranslate={(entryId) =>
-                void controller.retranslateEntry(entryId)
-              }
+              onCopyAll={(entryId) => void controller.copyEntry(entryId)}
             />
           </div>
         )}

@@ -1,6 +1,5 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
   theme: {
     extend: {
@@ -21,9 +20,6 @@ export default {
         success: "rgb(var(--color-success) / <alpha-value>)",
         warning: "rgb(var(--color-warning) / <alpha-value>)",
       },
-      fontFamily: {
-        sans: ["var(--font-sans)"],
-      },
       boxShadow: {
         soft: "var(--shadow-soft)",
       },
@@ -31,10 +27,6 @@ export default {
         compact: "var(--radius-compact)",
         control: "var(--radius-control)",
         surface: "var(--radius-surface)",
-        xl: "var(--radius-surface)",
-      },
-      maxWidth: {
-        translation: "560px",
       },
     },
   },

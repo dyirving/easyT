@@ -25,8 +25,8 @@ enigo = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 log = "0.4"
-# 异步运行时：rt 用于 spawn_blocking；time 用于重试延迟与登录轮询
-tokio = { version = "1", features = ["rt", "time", "sync", "macros", "rt-multi-thread"] }
+# 异步运行时：time 用于重试延迟与登录轮询
+tokio = { version = "1", features = ["time", "sync", "macros", "rt-multi-thread"] }
 # HTTP 客户端：stream 用于 SSE 流式响应
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 # 统一错误处理（实现 Display / Serialize，向前端友好返回）

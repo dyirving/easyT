@@ -23,6 +23,7 @@
 |---|---|---|
 | 0.1 | 2026-08-12 | 根据已批准共识和 `c76144b` 仓库现实生成首版 Full SDD |
 | 0.2 | 2026-08-12 | 完成统一进度 Channel、五阶段上报、Rust 权威计时、前端状态/UI 与自动验证 |
+| 0.3 | 2026-08-15 | 纳入翻译历史需求已批准的 `savingHistory` 第六阶段 |
 
 ### 0.2 实施验证摘要
 
@@ -38,7 +39,7 @@
 
 ### 0.3 不可协商约束
 
-1. 仅实现五个阶段：`checkingCache`、`preparingRequest`、`connectingBackend`、`waitingForContent`、`receivingContent`；不得增加 `finalizing` 或百分比进度。
+1. 实现六个真实阶段：`checkingCache`、`preparingRequest`、`connectingBackend`、`waitingForContent`、`receivingContent`、`savingHistory`；不得增加泛化 `finalizing` 或百分比进度。
 2. 阶段必须由真正执行操作的 Rust module 上报；前端只能展示和本地续算时间，不得按等待时长猜阶段。
 3. 一次性输出和流式输出必须共用一个请求级 Tauri Channel 和一个翻译 command；不得长期保留有 Channel/无 Channel 两条路径。
 4. Rust 单调时钟是总耗时权威；前端 `performance.now()` 只用于事件间平滑续算。

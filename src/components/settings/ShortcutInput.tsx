@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Keyboard } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui";
 
 interface ShortcutInputProps {
   value: string;
@@ -71,15 +71,12 @@ export function ShortcutInput({
   }, [recording, onChange]);
 
   return (
-    <div
-      className={cn(
-        "input flex cursor-pointer items-center gap-2",
-        recording && "border-accent ring-1 ring-accent/30"
-      )}
-      onClick={() => !disabled && inputRef.current?.focus()}
-    >
-      <Keyboard className="h-4 w-4 text-ink-muted" />
-      <input
+    <div className="relative">
+      <Keyboard
+        aria-hidden="true"
+        className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-ink-muted"
+      />
+      <Input
         ref={inputRef}
         value={value}
         readOnly
@@ -87,13 +84,12 @@ export function ShortcutInput({
         onFocus={() => setRecording(true)}
         onBlur={() => setRecording(false)}
         placeholder="点击并按下快捷键"
-        className="w-full bg-transparent text-sm outline-none"
-        onChange={() => {
-          /* 占位：仅展示用 */
-        }}
+        className="cursor-pointer pl-9 pr-24"
       />
       {recording ? (
-        <span className="text-xs text-accent">按下快捷键…</span>
+        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-accent">
+          按下快捷键…
+        </span>
       ) : null}
     </div>
   );

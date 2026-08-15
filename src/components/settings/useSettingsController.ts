@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 import {
@@ -38,6 +38,7 @@ export function useSettingsController() {
   const [historyLimitInput, setHistoryLimitInput] = useState(() =>
     String(config.translationHistoryLimit),
   );
+  const loginStatusVersion = useRef(0);
   const isWebGateway = config.backendMode === "webGateway";
   const historyLimitError = VALID_HISTORY_LIMIT.test(historyLimitInput)
     ? undefined
@@ -73,9 +74,10 @@ export function useSettingsController() {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     const provider = config.webGateway.provider;
     const check = async () => {
+      const version = loginStatusVersion.current;
       try {
         const status = await getWebLoginStatus(provider);
-        if (cancelled) return;
+        if (cancelled || version !== loginStatusVersion.current) return;
         setLoginStatus(status);
       } catch {
         if (!cancelled) retryTimer = setTimeout(check, POLL_MS * 2);
@@ -161,6 +163,7 @@ export function useSettingsController() {
     if (loginActionPending) return;
     setLoginActionPending(true);
     try {
+      loginStatusVersion.current += 1;
       const status = await beginWebLogin(config.webGateway.provider);
       setLoginStatus(status);
     } finally {

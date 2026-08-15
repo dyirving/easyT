@@ -54,6 +54,43 @@ describe("useSettingsController", () => {
     },
   );
 
+  it("ignores an initial status response that predates a new login", async () => {
+    vi.useFakeTimers();
+    let resolveInitialStatus: ((value: {
+      phase: "loggedOut";
+      message: null;
+      updatedAt: number;
+    }) => void) | undefined;
+    vi.mocked(getWebLoginStatus)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveInitialStatus = resolve;
+          }),
+      )
+      .mockResolvedValueOnce({ phase: "ready", message: null, updatedAt: 2 });
+    vi.mocked(beginWebLogin).mockResolvedValue({
+      phase: "loggingIn",
+      message: "正在登录...",
+      updatedAt: 1,
+    });
+    useSettingsStore.getState().setConfig({ backendMode: "webGateway" });
+
+    const { result } = renderHook(() => useSettingsController());
+    await act(async () => result.current.beginLogin());
+    expect(result.current.loginStatus?.phase).toBe("loggingIn");
+
+    await act(async () => {
+      resolveInitialStatus?.({ phase: "loggedOut", message: null, updatedAt: 0 });
+    });
+    expect(result.current.loginStatus?.phase).toBe("loggingIn");
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(result.current.loginStatus?.phase).toBe("ready");
+  });
+
   it("restores provider API keys and applies provider defaults", () => {
     useSettingsStore.getState().setConfig({ apiKeys: { deepseek: "saved-key" } });
     const { result } = renderHook(() => useSettingsController());

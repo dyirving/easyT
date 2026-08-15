@@ -29,7 +29,6 @@ pub struct CacheKey([u8; 32]);
 
 impl CacheKey {
     /// 供 03 工单 L2 持久化层以原始 32 字节作为 SQLite 主键。
-    #[allow(dead_code)]
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }

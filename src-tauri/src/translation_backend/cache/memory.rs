@@ -34,12 +34,6 @@ struct MemoryCacheState {
     long_logical_bytes: u64,
 }
 
-impl Default for MemoryCache {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl MemoryCache {
     pub fn new() -> Self {
         Self {
@@ -93,7 +87,6 @@ impl MemoryCache {
 
     /// 清空两层并推进 epoch，返回新 epoch；在途请求被拒绝回填。
     /// 由 `TranslationCache::clear_l1` 调用（清除命令入口在 04 工单接入）。
-    #[allow(dead_code)]
     pub fn clear_and_advance_epoch(&self) -> u64 {
         let mut state = lock_state(&self.state);
         state.short_pool.clear();

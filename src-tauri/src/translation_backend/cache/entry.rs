@@ -22,7 +22,6 @@ pub enum CachePolicy {
 
 /// 结果来源状态：结果如何产生，前端只消费 `TranslationOutcome.is_from_cache()`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // 03：L2 lookup 构造 PersistentHit
 pub enum CacheStatus {
     Miss,
     MemoryHit,
@@ -77,7 +76,6 @@ pub(super) fn parse_backend_storage_label(value: &str) -> Option<BackendMode> {
 /// 缓存查找结果：命中时携带完整译文（Arc 共享，避免复制）。
 /// `status` 由 03 工单在 L2 查找链读取并对外报告。
 #[derive(Debug)]
-#[allow(dead_code)] // 03：L2 查找链读取 status
 pub struct CacheLookupOutcome {
     pub status: CacheStatus,
     pub result: Option<Arc<BackendResult>>,
@@ -88,7 +86,6 @@ pub struct CacheLookupOutcome {
 /// `hit_count` 在覆盖（Refresh 或后续相同键写入）时归零。
 /// 时间戳与来源/译文字节数由 03 工单 L2 store 写入并用于统计。
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // 03：L2 store 写入与统计读取
 pub struct CacheEntry {
     pub key: CacheKey,
     pub result: Arc<BackendResult>,

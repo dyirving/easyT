@@ -1,7 +1,7 @@
 use std::thread;
 use std::time::Duration;
 
-use enigo::{Button, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use enigo::{Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use tauri::AppHandle;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use windows_sys::Win32::Foundation::POINT;
@@ -38,20 +38,6 @@ pub fn simulate_copy() -> AppResult<()> {
     enigo
         .key(Key::Control, Direction::Release)
         .map_err(|e| AppError::Internal(format!("释放 Control 失败: {e}")))?;
-    Ok(())
-}
-
-/// 模拟鼠标左键单击（备用，暂未使用）
-#[allow(dead_code)]
-pub fn simulate_click() -> AppResult<()> {
-    let mut enigo = Enigo::new(&Settings::default())
-        .map_err(|e| AppError::Internal(format!("Enigo 初始化失败: {e}")))?;
-    enigo
-        .button(Button::Left, Direction::Press)
-        .map_err(|e| AppError::Internal(format!("鼠标按下失败: {e}")))?;
-    enigo
-        .button(Button::Left, Direction::Release)
-        .map_err(|e| AppError::Internal(format!("鼠标释放失败: {e}")))?;
     Ok(())
 }
 

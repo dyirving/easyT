@@ -33,7 +33,6 @@ pub enum BackendError {
 
     /// 用户 abort（新请求取代旧请求）；不应改变登录状态
     #[error("翻译请求已被新请求取代")]
-    #[allow(dead_code)]
     Cancelled,
 
     /// 网络层错误（DNS、连接拒绝、TLS 等）

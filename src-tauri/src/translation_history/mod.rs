@@ -55,7 +55,7 @@ enum HistoryCommand {
         reply: oneshot::Sender<Result<TranslationHistoryEntry, HistoryError>>,
     },
     Commit {
-        draft: HistoryEntryDraft,
+        draft: Box<HistoryEntryDraft>,
         replace_entry_id: Option<String>,
         limit: u8,
         eligibility: HistoryCommitEligibility,
@@ -124,7 +124,7 @@ impl TranslationHistory {
                                 .as_mut()
                                 .ok_or(HistoryError::Unavailable)
                                 .and_then(|db| {
-                                    db.commit_entry(draft, replace_entry_id, limit, &eligibility)
+                                    db.commit_entry(*draft, replace_entry_id, limit, &eligibility)
                                 });
                             let _ = reply.send(result);
                         }
@@ -189,7 +189,7 @@ impl TranslationHistory {
         let (reply, mut receiver) = oneshot::channel();
         let token = eligibility.clone();
         let command = HistoryCommand::Commit {
-            draft,
+            draft: Box::new(draft),
             replace_entry_id,
             limit,
             eligibility,

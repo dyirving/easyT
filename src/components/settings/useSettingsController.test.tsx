@@ -1,8 +1,12 @@
 import { renderHook, act } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
-import { saveConfig } from "@/services/tauriCommands";
+import {
+  beginWebLogin,
+  getWebLoginStatus,
+  saveConfig,
+} from "@/services/tauriCommands";
 import { useSettingsController } from "./useSettingsController";
 
 vi.mock("@/services/tauriCommands", () => ({ getConfig: vi.fn(() => new Promise(() => {})), getWebLoginStatus: vi.fn(), beginWebLogin: vi.fn(), logoutWebAccount: vi.fn(), saveConfig: vi.fn(), testApiConnection: vi.fn(), toCommandError: (error: unknown) => ({ message: error instanceof Error ? error.message : "失败" }) }));
@@ -11,8 +15,45 @@ describe("useSettingsController", () => {
   beforeEach(() => {
     useSettingsStore.getState().resetToDefault();
     useTranslationHistoryStore.getState().reset();
+    vi.mocked(getWebLoginStatus).mockReset();
+    vi.mocked(beginWebLogin).mockReset();
     vi.mocked(saveConfig).mockReset();
   });
+  afterEach(() => vi.useRealTimers());
+
+  it.each(["loggedOut", "ready"] as const)(
+    "polls until a login started from %s completes",
+    async (initialPhase) => {
+      vi.useFakeTimers();
+      vi.mocked(getWebLoginStatus)
+        .mockResolvedValueOnce({
+          phase: initialPhase,
+          message: null,
+          updatedAt: 1,
+        })
+        .mockResolvedValueOnce({ phase: "ready", message: null, updatedAt: 2 });
+      vi.mocked(beginWebLogin).mockResolvedValue({
+        phase: "loggingIn",
+        message: "正在登录...",
+        updatedAt: 1,
+      });
+      useSettingsStore.getState().setConfig({ backendMode: "webGateway" });
+
+      const { result } = renderHook(() => useSettingsController());
+      await act(async () => Promise.resolve());
+      expect(result.current.loginStatus?.phase).toBe(initialPhase);
+
+      await act(async () => result.current.beginLogin());
+      expect(result.current.loginStatus?.phase).toBe("loggingIn");
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(getWebLoginStatus).toHaveBeenCalledTimes(2);
+      expect(result.current.loginStatus?.phase).toBe("ready");
+    },
+  );
+
   it("restores provider API keys and applies provider defaults", () => {
     useSettingsStore.getState().setConfig({ apiKeys: { deepseek: "saved-key" } });
     const { result } = renderHook(() => useSettingsController());

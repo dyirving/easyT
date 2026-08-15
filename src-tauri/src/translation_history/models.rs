@@ -85,7 +85,7 @@ impl HistoryEntryDraft {
             .min(u128::from(u64::MAX)) as u64
     }
 
-    pub fn logical_size_bytes(&self, _completed_at_utc_ms: i64) -> u64 {
+    pub fn logical_size_bytes(&self) -> u64 {
         let backend = backend_storage_label(self.source.backend);
         [
             self.entry_id.len() as u64,

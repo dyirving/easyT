@@ -21,7 +21,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
 
 use crate::translation_backend::web_gateway::credential_store::{self, TicketSecret};
@@ -255,8 +254,7 @@ impl Default for QwenSession {
     }
 }
 
-/// 根据 AppConfig 决定当前 QwenSession 是否可用
-pub fn ensure_qwen_ready(session: &QwenSession, _config: &AppConfig) -> Result<(), BackendError> {
+pub fn ensure_qwen_ready(session: &QwenSession) -> Result<(), BackendError> {
     let status = session.status();
     match status.phase {
         QwenSessionPhase::Ready => Ok(()),

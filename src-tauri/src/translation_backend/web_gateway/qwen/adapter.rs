@@ -28,7 +28,9 @@ use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{BackendRequest, BackendResult, BackendSource};
 use crate::translation_backend::prompt::build_system_prompt;
-use crate::translation_backend::{BackendHealth, TranslationPhase, TranslationProgressReporter};
+use crate::translation_backend::{
+    connection_success_message, TranslationPhase, TranslationProgressReporter,
+};
 
 use super::session::{ensure_qwen_ready, QwenSession};
 use super::sse_decoder::{DecodeOutcome, QwenSseDecoder};
@@ -76,7 +78,7 @@ impl QwenWebAdapter {
         request: BackendRequest,
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
-        ensure_qwen_ready(&self.session, config)?;
+        ensure_qwen_ready(&self.session)?;
 
         let app_data = crate::config::app_data_dir()
             .map_err(|e| BackendError::Internal(format!("无法定位应用数据目录: {e}")))?;
@@ -109,7 +111,7 @@ impl QwenWebAdapter {
         request: BackendRequest,
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
-        ensure_qwen_ready(&self.session, config)?;
+        ensure_qwen_ready(&self.session)?;
 
         let app_data = crate::config::app_data_dir()
             .map_err(|e| BackendError::Internal(format!("无法定位应用数据目录: {e}")))?;
@@ -268,29 +270,29 @@ impl QwenWebAdapter {
         &self,
         config: &AppConfig,
         progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendHealth, BackendError> {
-        ensure_qwen_ready(&self.session, config)?;
+    ) -> Result<String, BackendError> {
+        ensure_qwen_ready(&self.session)?;
 
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
         };
         let result = self.translate(config, request, progress).await?;
-        Ok(BackendHealth::translation_succeeded("连接成功", &result))
+        Ok(connection_success_message("连接成功", &result))
     }
 
     pub async fn test_connection_stream(
         &self,
         config: &AppConfig,
         progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendHealth, BackendError> {
-        ensure_qwen_ready(&self.session, config)?;
+    ) -> Result<String, BackendError> {
+        ensure_qwen_ready(&self.session)?;
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
         };
         let result = self.translate_stream(config, request, progress).await?;
-        Ok(BackendHealth::translation_succeeded(
+        Ok(connection_success_message(
             "流式连接成功",
             &result,
         ))

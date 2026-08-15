@@ -228,7 +228,7 @@ impl OfficialApiAdapter {
         &self,
         config: &AppConfig,
         progress: Arc<TranslationProgressReporter>,
-    ) -> Result<crate::translation_backend::BackendHealth, BackendError> {
+    ) -> Result<String, BackendError> {
         if config.api_key.trim().is_empty() {
             return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
         }
@@ -238,14 +238,17 @@ impl OfficialApiAdapter {
             target_language: config.target_language.clone(),
         };
         let result = self.translate(config, request, progress).await?;
-        Ok(crate::translation_backend::BackendHealth::translation_succeeded("连接成功", &result))
+        Ok(crate::translation_backend::connection_success_message(
+            "连接成功",
+            &result,
+        ))
     }
 
     pub async fn test_connection_stream(
         &self,
         config: &AppConfig,
         progress: Arc<TranslationProgressReporter>,
-    ) -> Result<crate::translation_backend::BackendHealth, BackendError> {
+    ) -> Result<String, BackendError> {
         if config.api_key.trim().is_empty() {
             return Err(BackendError::ConfigInvalid("API Key 不能为空".to_string()));
         }
@@ -255,12 +258,10 @@ impl OfficialApiAdapter {
             target_language: config.target_language.clone(),
         };
         let result = self.translate_stream(config, request, progress).await?;
-        Ok(
-            crate::translation_backend::BackendHealth::translation_succeeded(
-                "流式连接成功",
-                &result,
-            ),
-        )
+        Ok(crate::translation_backend::connection_success_message(
+            "流式连接成功",
+            &result,
+        ))
     }
 }
 
@@ -311,18 +312,6 @@ where
                 }
             }
         }
-    }
-}
-
-fn provider_str(provider: &ModelProvider) -> String {
-    match provider {
-        ModelProvider::Agnes => "agnes".to_string(),
-        ModelProvider::Deepseek => "deepseek".to_string(),
-        ModelProvider::Qwen => "qwen".to_string(),
-        ModelProvider::Glm => "glm".to_string(),
-        ModelProvider::Kimi => "kimi".to_string(),
-        ModelProvider::Doubao => "doubao".to_string(),
-        ModelProvider::Custom => "custom".to_string(),
     }
 }
 
@@ -377,7 +366,7 @@ fn build_backend_result(
         translated_text,
         source: BackendSource {
             backend: BackendMode::OfficialApi,
-            provider: provider_str(&config.provider),
+            provider: config.provider.stable_id().to_string(),
             model: config.model.clone(),
         },
     })

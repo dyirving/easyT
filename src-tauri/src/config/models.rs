@@ -30,6 +30,20 @@ impl Default for ModelProvider {
     }
 }
 
+impl ModelProvider {
+    pub fn stable_id(&self) -> &'static str {
+        match self {
+            Self::Agnes => "agnes",
+            Self::Deepseek => "deepseek",
+            Self::Qwen => "qwen",
+            Self::Glm => "glm",
+            Self::Kimi => "kimi",
+            Self::Doubao => "doubao",
+            Self::Custom => "custom",
+        }
+    }
+}
+
 /// WebGateway 配置（实验功能）
 /// - provider：第一版仅 Qwen
 /// - model：必须来自内部允许列表，不接受任意字符串

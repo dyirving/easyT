@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationHistoryStore } from "@/stores/translationHistoryStore";
 import {
@@ -21,7 +21,7 @@ const POLL_MS = 1000;
 const VALID_HISTORY_LIMIT = /^(?:[1-9]|1\d|20)$/;
 
 export function useSettingsController() {
-  const { config, setConfig, loadConfig, markSaved } = useSettingsStore();
+  const { config, setConfig, loadConfig } = useSettingsStore();
   const [loadingConfig, setLoadingConfig] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -38,7 +38,6 @@ export function useSettingsController() {
   const [historyLimitInput, setHistoryLimitInput] = useState(() =>
     String(config.translationHistoryLimit),
   );
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isWebGateway = config.backendMode === "webGateway";
   const historyLimitError = VALID_HISTORY_LIMIT.test(historyLimitInput)
     ? undefined
@@ -71,6 +70,28 @@ export function useSettingsController() {
       return;
     }
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    const provider = config.webGateway.provider;
+    const check = async () => {
+      try {
+        const status = await getWebLoginStatus(provider);
+        if (cancelled) return;
+        setLoginStatus(status);
+      } catch {
+        if (!cancelled) retryTimer = setTimeout(check, POLL_MS * 2);
+      }
+    };
+    void check();
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [isWebGateway, config.webGateway.provider]);
+
+  useEffect(() => {
+    if (!isWebGateway || loginStatus?.phase !== "loggingIn") return;
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
     const provider = config.webGateway.provider;
     const check = async () => {
       try {
@@ -78,18 +99,18 @@ export function useSettingsController() {
         if (cancelled) return;
         setLoginStatus(status);
         if (status.phase === "loggingIn") {
-          timer.current = setTimeout(check, POLL_MS);
+          pollTimer = setTimeout(check, POLL_MS);
         }
       } catch {
-        if (!cancelled) timer.current = setTimeout(check, POLL_MS * 2);
+        if (!cancelled) pollTimer = setTimeout(check, POLL_MS * 2);
       }
     };
-    void check();
+    pollTimer = setTimeout(check, POLL_MS);
     return () => {
       cancelled = true;
-      if (timer.current) clearTimeout(timer.current);
+      if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [isWebGateway, config.webGateway.provider]);
+  }, [isWebGateway, config.webGateway.provider, loginStatus?.phase]);
 
   const changeHistoryLimit = (value: string) => {
     setHistoryLimitInput(value);
@@ -109,7 +130,6 @@ export function useSettingsController() {
         ...config,
         translationHistoryLimit: Number(historyLimitInput),
       });
-      markSaved();
       setSaveMessage("设置已保存");
       if (result?.historyUpdate?.status === "applied") {
         useTranslationHistoryStore.getState().applyLimitUpdate(
@@ -146,7 +166,8 @@ export function useSettingsController() {
     if (loginActionPending) return;
     setLoginActionPending(true);
     try {
-      setLoginStatus(await beginWebLogin(config.webGateway.provider));
+      const status = await beginWebLogin(config.webGateway.provider);
+      setLoginStatus(status);
     } finally {
       setLoginActionPending(false);
     }

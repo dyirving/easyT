@@ -153,7 +153,7 @@ impl HistoryDatabase {
         }
         let completed_at = draft.completed_at_utc_ms();
         let total_elapsed = draft.total_elapsed_ms();
-        let logical_size = draft.logical_size_bytes(completed_at);
+        let logical_size = draft.logical_size_bytes();
         if logical_size > MAX_HISTORY_ENTRY_BYTES {
             return Ok(HistoryCommitOutcome::NotSaved {
                 warning: HistoryWarning::too_large(),
@@ -635,9 +635,9 @@ mod tests {
         exact.translated_text.clear();
         exact.original_summary.clear();
         exact.translated_summary.clear();
-        let fixed = exact.logical_size_bytes(0);
+        let fixed = exact.logical_size_bytes();
         exact.original_text = "a".repeat((MAX_HISTORY_ENTRY_BYTES - fixed) as usize);
-        assert_eq!(exact.logical_size_bytes(0), MAX_HISTORY_ENTRY_BYTES);
+        assert_eq!(exact.logical_size_bytes(), MAX_HISTORY_ENTRY_BYTES);
         assert!(matches!(
             db.commit_entry(exact, None, 5, &eligible())
                 .expect("exact commit"),
@@ -649,7 +649,7 @@ mod tests {
         oversized.translated_text.clear();
         oversized.original_summary.clear();
         oversized.translated_summary.clear();
-        let fixed = oversized.logical_size_bytes(0);
+        let fixed = oversized.logical_size_bytes();
         oversized.original_text = "a".repeat((MAX_HISTORY_ENTRY_BYTES - fixed + 1) as usize);
         assert!(matches!(
             db.commit_entry(oversized, None, 5, &eligible())

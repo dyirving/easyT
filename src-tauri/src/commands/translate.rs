@@ -18,6 +18,15 @@ use crate::translation_history::{
 use serde::Serialize;
 use tauri::{ipc::Channel, State};
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TranslationResult {
+    translated_text: String,
+    from_cache: bool,
+    total_elapsed_ms: u64,
+    history: HistoryCommitOutcome,
+}
+
 struct ActiveTranslation {
     generation: u64,
     abort_handle: tokio::task::AbortHandle,
@@ -191,7 +200,7 @@ pub async fn translate_text(
     force_refresh: bool,
     replace_entry_id: Option<String>,
     on_event: Channel<TranslationProgressEvent>,
-) -> Result<crate::llm::models::TranslationResult, TranslationCommandError> {
+) -> Result<TranslationResult, TranslationCommandError> {
     if request_id.trim().is_empty() {
         return Err(TranslationCommandError::from_app(
             AppError::ConfigInvalid("请求 ID 不能为空".to_string()),
@@ -271,9 +280,9 @@ fn translate_outcome_to_result(
     outcome: crate::translation_backend::TranslationOutcome,
     total_elapsed_ms: u64,
     history: HistoryCommitOutcome,
-) -> crate::llm::models::TranslationResult {
+) -> TranslationResult {
     let from_cache = outcome.is_from_cache();
-    crate::llm::models::TranslationResult {
+    TranslationResult {
         translated_text: outcome.result.translated_text,
         from_cache,
         total_elapsed_ms,
@@ -302,8 +311,7 @@ pub async fn test_connection(
 ) -> AppResult<String> {
     let config = state.snapshot()?;
     validate_test_config(&config)?;
-    let health = backend.test_connection(&config).await?;
-    Ok(health.message)
+    backend.test_connection(&config).await.map_err(Into::into)
 }
 
 /// 兼容 wrapper：保留旧 command 名 `test_api_connection`
@@ -316,8 +324,7 @@ pub async fn test_api_connection(
     // 优先使用传入的草稿配置（不修改 AppState），便于在设置页测试未保存的配置
     let _ = state.snapshot()?; // 仅校验 AppState 可用
     validate_test_config(&config)?;
-    let health = backend.test_connection(&config).await?;
-    Ok(health.message)
+    backend.test_connection(&config).await.map_err(Into::into)
 }
 
 fn validate_test_config(config: &crate::config::AppConfig) -> AppResult<()> {

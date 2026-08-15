@@ -1,7 +1,6 @@
 mod app_error;
 mod commands;
 mod config;
-mod llm;
 mod platform;
 mod shortcut;
 mod translation_backend;

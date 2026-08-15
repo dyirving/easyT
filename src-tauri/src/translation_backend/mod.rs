@@ -32,7 +32,7 @@ pub use progress::{
 use std::future::Future;
 use std::sync::Arc;
 
-use crate::config::{AppConfig, ModelProvider};
+use crate::config::AppConfig;
 
 use self::cache::{
     is_definitely_oversized, prepare_cache_input, NormalizedCacheInput, TranslationCache,
@@ -40,24 +40,11 @@ use self::cache::{
 use self::official_api::OfficialApiAdapter;
 use self::web_gateway::WebGateway;
 
-/// 后端连接健康检查结果
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BackendHealth {
-    pub ok: bool,
-    pub message: String,
-}
-
-impl BackendHealth {
-    fn translation_succeeded(prefix: &str, result: &BackendResult) -> Self {
-        Self {
-            ok: true,
-            message: format!(
-                "{prefix}，返回译文长度 {} 字符",
-                result.translated_text.chars().count()
-            ),
-        }
-    }
+pub(crate) fn connection_success_message(prefix: &str, result: &BackendResult) -> String {
+    format!(
+        "{prefix}，返回译文长度 {} 字符",
+        result.translated_text.chars().count()
+    )
 }
 
 /// 翻译后端统一入口
@@ -132,7 +119,7 @@ impl TranslationBackend {
 
     /// 测试连接：必须通过当前 Adapter 进行真实轻量请求
     /// WebGateway 模式不得仅检查本地 ticket 存在后返回成功
-    pub async fn test_connection(&self, config: &AppConfig) -> Result<BackendHealth, BackendError> {
+    pub async fn test_connection(&self, config: &AppConfig) -> Result<String, BackendError> {
         validate_test_connection(config)?;
         let progress = Arc::new(TranslationProgressReporter::discard());
         match config.backend_mode {
@@ -153,17 +140,10 @@ impl TranslationBackend {
 }
 
 fn progress_backend_source(config: &AppConfig) -> ProgressBackendSource {
-    let provider = match config.backend_mode {
-        BackendMode::WebGateway => "qwen",
-        BackendMode::OfficialApi => match config.provider {
-            ModelProvider::Agnes => "agnes",
-            ModelProvider::Deepseek => "deepseek",
-            ModelProvider::Qwen => "qwen",
-            ModelProvider::Glm => "glm",
-            ModelProvider::Kimi => "kimi",
-            ModelProvider::Doubao => "doubao",
-            ModelProvider::Custom => "custom",
-        },
+    let provider = if config.backend_mode == BackendMode::WebGateway {
+        "qwen"
+    } else {
+        config.provider.stable_id()
     };
     ProgressBackendSource {
         mode: config.backend_mode,

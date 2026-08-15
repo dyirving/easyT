@@ -503,7 +503,7 @@ mod tests {
         let json2 = r#"{"error_code":0,"data":{"messages":[{"mime_type":"text/plain","content":"Hi there"}]}}"#;
         let chunk = format!("{}{}", data_event(json1), data_event(json2));
         let mut decoder = QwenSseDecoder::new();
-        let outcomes = decoder.feed(&chunk).expect("feed");
+        let outcomes = decoder.feed(chunk).expect("feed");
         assert_eq!(outcomes.len(), 2);
         // 第一次：Hi
         match &outcomes[0] {
@@ -529,12 +529,12 @@ mod tests {
 
     #[test]
     fn multiple_data_lines_are_joined() {
-        let json =
-            r#"{"error_code":0,"data":{"messages":[{"mime_type":"text/plain","content":"Hi"}]}}"#;
-        // SSE 允许同一事件多行 data
-        let chunk = format!("data: {json}\n\n");
+        let chunk = concat!(
+            "data: {\"error_code\":0,\n",
+            "data: \"data\":{\"messages\":[{\"mime_type\":\"text/plain\",\"content\":\"Hi\"}]}}\n\n"
+        );
         let mut decoder = QwenSseDecoder::new();
-        let outcomes = decoder.feed(&chunk).expect("feed");
+        let outcomes = decoder.feed(chunk).expect("feed");
         assert_eq!(outcomes.len(), 1);
     }
 

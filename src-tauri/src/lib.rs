@@ -17,12 +17,9 @@ use commands::{
         clear_translation_history, get_translation_history_entry, initialize_translation_history,
     },
     selection::capture_selected_text,
-    translate::{test_api_connection, test_connection, translate_text, TranslationRequestManager},
+    translate::{test_api_connection, translate_text, TranslationRequestManager},
     web_gateway::{begin_web_login, get_web_login_status, logout_web_account},
-    window::{
-        hide_translation_window, position_window_near_mouse, set_window_pinned,
-        show_translation_window,
-    },
+    window::position_window_near_mouse,
 };
 use config::{app_data_dir, load_config};
 use tauri::{
@@ -158,10 +155,6 @@ pub fn run() {
             capture_selected_text,
             translate_text,
             test_api_connection,
-            test_connection,
-            show_translation_window,
-            hide_translation_window,
-            set_window_pinned,
             position_window_near_mouse,
             copy_translation,
             begin_web_login,

@@ -185,18 +185,6 @@ export async function logoutWebAccount(
 }
 
 /**
- * 以下为窗口相关命令
- */
-export async function showTranslationWindow(): Promise<void> {
-  await invoke<void>("show_translation_window");
-}
-export async function hideTranslationWindow(): Promise<void> {
-  await invoke<void>("hide_translation_window");
-}
-export async function setWindowPinned(pinned: boolean): Promise<void> {
-  await invoke<void>("set_window_pinned", { pinned });
-}
-/**
  * 把主窗口重新定位到鼠标附近
  * 阶段8：在快捷键触发翻译前调用，让窗口即时出现在鼠标附近
  * pinned=true 时 Rust 端会跳过重新定位
@@ -283,18 +271,6 @@ export function toFriendlyError(err: CommandError): FriendlyError {
       return {
         friendlyMessage: "请求超时",
         hint: "请检查网络，或在设置中增大超时时间",
-        retryable: true,
-      };
-    case ERROR_KIND.ApiRequestFailed:
-      return {
-        friendlyMessage: err.message || "网络请求失败",
-        hint: "请检查网络与 Base URL 是否可达",
-        retryable: true,
-      };
-    case ERROR_KIND.ApiResponseInvalid:
-      return {
-        friendlyMessage: err.message || "响应格式无效",
-        hint: "服务端返回内容不符合 OpenAI 协议",
         retryable: true,
       };
     case ERROR_KIND.LoginRequired:

@@ -33,14 +33,6 @@ pub enum AppError {
     #[error("请求超时")]
     ApiTimeout,
 
-    #[error("请求失败: {0}")]
-    #[allow(dead_code)]
-    ApiRequestFailed(String),
-
-    #[error("响应格式无效: {0}")]
-    #[allow(dead_code)]
-    ApiResponseInvalid(String),
-
     #[error("窗口操作失败: {0}")]
     WindowError(String),
 
@@ -98,8 +90,6 @@ impl AppError {
             AppError::ApiUnauthorized => "ApiUnauthorized",
             AppError::ApiRateLimited => "ApiRateLimited",
             AppError::ApiTimeout => "ApiTimeout",
-            AppError::ApiRequestFailed(_) => "ApiRequestFailed",
-            AppError::ApiResponseInvalid(_) => "ApiResponseInvalid",
             AppError::WindowError(_) => "WindowError",
             AppError::CacheOperationFailed(_) => "CacheOperationFailed",
             AppError::HistoryOperationFailed(_) => "HistoryOperationFailed",

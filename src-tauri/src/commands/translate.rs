@@ -300,29 +300,14 @@ fn validate_translate_request(config: &crate::config::AppConfig, text: &str) -> 
     Ok(())
 }
 
-/// 测试连接
-///
-/// 通过当前选中的 Adapter 进行真实轻量请求。
-/// WebGateway 模式不得仅检查本地 ticket 存在后返回成功。
-#[tauri::command]
-pub async fn test_connection(
-    state: State<'_, AppState>,
-    backend: State<'_, Arc<TranslationBackend>>,
-) -> AppResult<String> {
-    let config = state.snapshot()?;
-    validate_test_config(&config)?;
-    backend.test_connection(&config).await.map_err(Into::into)
-}
-
-/// 兼容 wrapper：保留旧 command 名 `test_api_connection`
+/// 使用未保存的设置草稿测试连接。
 #[tauri::command]
 pub async fn test_api_connection(
     state: State<'_, AppState>,
     backend: State<'_, Arc<TranslationBackend>>,
     config: crate::config::AppConfig,
 ) -> AppResult<String> {
-    // 优先使用传入的草稿配置（不修改 AppState），便于在设置页测试未保存的配置
-    let _ = state.snapshot()?; // 仅校验 AppState 可用
+    let _ = state.snapshot()?;
     validate_test_config(&config)?;
     backend.test_connection(&config).await.map_err(Into::into)
 }

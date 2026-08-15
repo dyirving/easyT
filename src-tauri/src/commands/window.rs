@@ -12,37 +12,6 @@ fn get_main_window(app: &tauri::AppHandle) -> AppResult<WebviewWindow> {
         .ok_or_else(|| AppError::WindowError("主窗口未找到".to_string()))
 }
 
-/// 显示翻译窗口
-/// 取消置顶并不影响：只是从隐藏状态切回显示并聚焦
-#[tauri::command]
-pub async fn show_translation_window(app: tauri::AppHandle) -> AppResult<()> {
-    let win = get_main_window(&app)?;
-    win.show()
-        .map_err(|e| AppError::WindowError(e.to_string()))?;
-    win.set_focus()
-        .map_err(|e| AppError::WindowError(e.to_string()))?;
-    Ok(())
-}
-
-/// 隐藏翻译窗口（不退出应用）
-#[tauri::command]
-pub async fn hide_translation_window(app: tauri::AppHandle) -> AppResult<()> {
-    let win = get_main_window(&app)?;
-    win.hide()
-        .map_err(|e| AppError::WindowError(e.to_string()))?;
-    Ok(())
-}
-
-/// 设置窗口固定状态
-/// pinned 状态主要由前端 store 管理，Rust 端命令保留用于：
-/// - 阶段8 判断是否需要重新定位窗口到鼠标附近
-/// - 后续可能影响 always_on_top 等窗口属性
-#[tauri::command]
-pub async fn set_window_pinned(_app: tauri::AppHandle, _pinned: bool) -> AppResult<()> {
-    // 当前阶段状态在前端 store 中，无需 Rust 端持久化
-    Ok(())
-}
-
 /// 把主窗口重新定位到鼠标附近
 /// 阶段8：
 /// - pinned=true 时跳过重新定位（保持当前位置）

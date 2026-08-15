@@ -2,19 +2,17 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useTranslationStore } from "@/stores/translationStore";
-import { copyTranslation, setWindowPinned } from "@/services/tauriCommands";
+import { copyTranslation } from "@/services/tauriCommands";
 import { runTranslationRequest } from "@/services/translationRunner";
 import { useTranslationController } from "./useTranslationController";
 
 vi.mock("@/services/tauriCommands", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/services/tauriCommands")>()),
   copyTranslation: vi.fn(),
-  setWindowPinned: vi.fn(),
 }));
 vi.mock("@/services/translationRunner", () => ({ runTranslationRequest: vi.fn() }));
 
 const mockedCopy = vi.mocked(copyTranslation);
-const mockedSetPinned = vi.mocked(setWindowPinned);
 const mockedRun = vi.mocked(runTranslationRequest);
 
 describe("useTranslationController", () => {
@@ -24,7 +22,6 @@ describe("useTranslationController", () => {
     useTranslationStore.getState().reset();
     useSettingsStore.getState().resetToDefault();
     mockedCopy.mockReset().mockResolvedValue(undefined);
-    mockedSetPinned.mockReset().mockResolvedValue(undefined);
     mockedRun.mockReset().mockResolvedValue(undefined);
     consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
@@ -72,7 +69,7 @@ describe("useTranslationController", () => {
     useTranslationStore.getState().succeedRequest(requestId, { translatedText: "译文", fromCache: false, totalElapsedMs: 1200 });
     const { result } = renderHook(() => useTranslationController());
 
-    await act(() => result.current.copy());
+    await act(() => result.current.copyTop());
 
     expect(mockedCopy).toHaveBeenCalledWith("译文");
     expect(result.current.copied).toBe(true);
@@ -87,7 +84,7 @@ describe("useTranslationController", () => {
     const { result } = renderHook(() => useTranslationController());
 
     try {
-      await act(() => result.current.copy());
+      await act(() => result.current.copyTop());
 
       expect(result.current.copied).toBe(false);
       expect(consoleWarn).toHaveBeenCalled();
@@ -96,12 +93,11 @@ describe("useTranslationController", () => {
     }
   });
 
-  it("synchronizes pin changes to the native window command", () => {
+  it("updates the pin state used by window positioning", () => {
     const { result } = renderHook(() => useTranslationController());
 
     act(() => result.current.togglePin());
 
     expect(useTranslationStore.getState().pinned).toBe(true);
-    expect(mockedSetPinned).toHaveBeenCalledWith(true);
   });
 });

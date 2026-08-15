@@ -409,8 +409,6 @@ export const ERROR_KIND = {
   ApiUnauthorized: "ApiUnauthorized",
   ApiRateLimited: "ApiRateLimited",
   ApiTimeout: "ApiTimeout",
-  ApiRequestFailed: "ApiRequestFailed",
-  ApiResponseInvalid: "ApiResponseInvalid",
   WindowError: "WindowError",
   CacheOperationFailed: "CacheOperationFailed",
   HistoryOperationFailed: "HistoryOperationFailed",

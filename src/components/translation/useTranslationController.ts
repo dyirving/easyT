@@ -6,7 +6,6 @@ import {
   clearTranslationHistory,
   copyTranslation,
   getTranslationHistoryEntry,
-  setWindowPinned,
   toCommandError,
   toFriendlyError,
 } from "@/services/tauriCommands";
@@ -133,14 +132,7 @@ export function useTranslationController() {
   };
 
   const togglePin = () => {
-    const next = !translation.pinned;
     translation.togglePinned();
-    setWindowPinned(next).catch((error) => {
-      console.warn(
-        "[easyT] set_window_pinned 失败:",
-        toCommandError(error).message,
-      );
-    });
   };
 
   const topTranslatedText =
@@ -201,7 +193,6 @@ export function useTranslationController() {
     retry,
     togglePin,
     copyTop,
-    copy: copyTop,
     toggleHistoryEntry,
     copyEntry,
     retranslateEntry,

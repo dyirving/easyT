@@ -32,7 +32,6 @@ export function useTranslationController() {
   const translate = async (
     text: string,
     forceRefresh = false,
-    replaceEntryId?: string,
   ) => {
     history.prepareForNewRequest();
     const requestId = translation.startRequest(text, forceRefresh);
@@ -53,17 +52,7 @@ export function useTranslationController() {
       );
       return;
     }
-    if (replaceEntryId) {
-      await runTranslationRequest(
-        requestId,
-        text,
-        { ...config },
-        forceRefresh,
-        replaceEntryId,
-      );
-    } else {
-      await runTranslationRequest(requestId, text, { ...config }, forceRefresh);
-    }
+    await runTranslationRequest(requestId, text, { ...config }, forceRefresh);
   };
 
   const latestSummary = history.summaries[0];
@@ -112,18 +101,9 @@ export function useTranslationController() {
     }
   };
 
-  const retranslateEntry = async (entryId: string) => {
-    history.setPendingAction(entryId, "retranslate");
-    const entry = await loadEntry(entryId);
-    history.setPendingAction(entryId, undefined);
-    if (entry) await translate(entry.originalText, true, entryId);
-  };
-
   const retry = () => {
     if (translation.originalText) {
       void translate(translation.originalText, true);
-    } else if (latestSummary) {
-      void retranslateEntry(latestSummary.entryId);
     }
   };
 
@@ -192,7 +172,6 @@ export function useTranslationController() {
     copyTop,
     toggleHistoryEntry,
     copyEntry,
-    retranslateEntry,
     confirmClear,
   };
 }

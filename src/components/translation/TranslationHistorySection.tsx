@@ -14,7 +14,7 @@ interface TranslationHistorySectionProps {
   loadingEntryIds: string[];
   pendingActionById: Record<
     string,
-    "copyAll" | "retranslate" | undefined
+    "copyAll" | undefined
   >;
   clearDisabled: boolean;
   onClear(): void;

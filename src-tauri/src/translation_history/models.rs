@@ -171,7 +171,6 @@ impl HistoryWarning {
 pub enum HistoryCommitOutcome {
     Saved {
         summary: TranslationHistorySummary,
-        replaced_entry_id: Option<String>,
         evicted_entry_ids: Vec<String>,
     },
     NotSaved {
@@ -381,15 +380,12 @@ mod tests {
                 total_elapsed_ms: 10,
                 completed_at_utc_ms: 20,
             },
-            replaced_entry_id: None,
             evicted_entry_ids: vec!["evicted-id".to_string()],
         };
 
         let value = serde_json::to_value(outcome).expect("serialize history outcome");
         assert_eq!(value["status"], "saved");
-        assert_eq!(value["replacedEntryId"], serde_json::Value::Null);
         assert_eq!(value["evictedEntryIds"][0], "evicted-id");
-        assert!(value.get("replaced_entry_id").is_none());
         assert!(value.get("evicted_entry_ids").is_none());
     }
 

@@ -2,6 +2,8 @@ export { CacheDetailsDialog } from "./CacheDetailsDialog";
 export { SettingsHeader } from "./SettingsHeader";
 export { SettingsRow } from "./SettingsRow";
 export { ShortcutInput } from "./ShortcutInput";
+export { TermbaseDialog } from "./TermbaseDialog";
 export { useSettingsController } from "./useSettingsController";
+export { useTermbaseController } from "./useTermbaseController";
 export { OfficialApiPanel } from "./OfficialApiPanel";
 export { WebGatewayPanel } from "./WebGatewayPanel";

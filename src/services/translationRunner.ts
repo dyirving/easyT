@@ -15,7 +15,6 @@ export async function runTranslationRequest(
   text: string,
   config: AppConfig,
   forceRefresh = false,
-  replaceEntryId?: string,
 ) {
   const deltaBuffer = config.streamOutput
     ? createTranslationDeltaBuffer(requestId)
@@ -27,7 +26,6 @@ export async function runTranslationRequest(
       text,
       targetLanguage: config.targetLanguage,
       forceRefresh,
-      replaceEntryId,
       onPhaseChanged: (event) =>
         useTranslationStore.getState().applyProgressPhase(requestId, event),
       onContentDelta: deltaBuffer?.append,
@@ -38,7 +36,6 @@ export async function runTranslationRequest(
         result.history.summary,
         text,
         result.translatedText,
-        result.history.replacedEntryId,
         result.history.evictedEntryIds,
       );
       useTranslationStore.getState().finishPersistedRequest(requestId);

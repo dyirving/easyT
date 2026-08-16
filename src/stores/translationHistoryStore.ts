@@ -9,7 +9,7 @@ import type {
 export const DEFAULT_MANUAL_INPUT =
   "Large language models are trained on massive text corpora.";
 
-type PendingHistoryAction = "copyAll" | "retranslate";
+type PendingHistoryAction = "copyAll";
 
 interface TranslationHistoryStore {
   initialization: "loading" | "ready" | "unavailable";
@@ -36,7 +36,6 @@ interface TranslationHistoryStore {
     summary: TranslationHistorySummary,
     originalText: string,
     translatedText: string,
-    replacedEntryId: string | undefined,
     evictedEntryIds: string[],
   ) => void;
   applyLimitUpdate: (
@@ -126,14 +125,9 @@ export const useTranslationHistoryStore = create<TranslationHistoryStore>(
       summary,
       originalText,
       translatedText,
-      replacedEntryId,
       evictedEntryIds,
     ) => {
-      const removed = new Set(
-        [replacedEntryId, ...evictedEntryIds].filter(
-          (value): value is string => Boolean(value),
-        ),
-      );
+      const removed = new Set(evictedEntryIds);
       const prior = get().summaries.filter(
         (item) => item.entryId !== summary.entryId && !removed.has(item.entryId),
       );

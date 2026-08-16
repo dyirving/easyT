@@ -12,11 +12,14 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{AppConfig, ModelProvider};
-use crate::translation_backend::error::BackendError;
+use crate::translation_backend::error::{
+    is_context_length_pattern, BackendError, TERMBASE_CONTEXT_LENGTH_MESSAGE,
+};
 use crate::translation_backend::models::{
     BackendMode, BackendRequest, BackendResult, BackendSource,
 };
 use crate::translation_backend::prompt::build_system_prompt;
+use crate::termbase::EffectiveTermbase;
 use crate::translation_backend::{TranslationPhase, TranslationProgressReporter};
 
 use super::sse_decoder::{OpenAiDecodeOutcome, OpenAiSseDecoder};
@@ -236,6 +239,7 @@ impl OfficialApiAdapter {
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
+            prompt: build_system_prompt(&config.target_language, &EffectiveTermbase::empty()),
         };
         let result = self.translate(config, request, progress).await?;
         Ok(crate::translation_backend::connection_success_message(
@@ -256,6 +260,7 @@ impl OfficialApiAdapter {
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
+            prompt: build_system_prompt(&config.target_language, &EffectiveTermbase::empty()),
         };
         let result = self.translate_stream(config, request, progress).await?;
         Ok(crate::translation_backend::connection_success_message(
@@ -339,7 +344,7 @@ fn build_request_body(
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),
-                content: build_system_prompt(&request.target_language),
+                content: request.prompt.clone(),
             },
             ChatMessage {
                 role: "user".to_string(),
@@ -384,6 +389,11 @@ fn map_status_to_error(status: reqwest::StatusCode, body: &str) -> BackendError 
         401 | 403 => BackendError::Unauthorized,
         429 => BackendError::RateLimited,
         500..=599 => BackendError::Network(format!("服务器错误 ({})", code)),
+        // FR-010：400 且正文命中上下文过长模式时给出专属提示；正文绝不透传。
+        400 if is_context_length_pattern(body) => {
+            log::warn!("termbase_prompt_context_error: recognized context-length from Official API");
+            BackendError::InvalidResponse(TERMBASE_CONTEXT_LENGTH_MESSAGE.to_string())
+        }
         _ => {
             let detail = summarize_error_body(body);
             if detail.is_empty() {
@@ -510,11 +520,36 @@ mod tests {
     }
 
     #[test]
+    fn context_length_body_maps_to_dedicated_message_without_exposing_body() {
+        // FR-010/T-012：400 + 上下文过长正文 → 固定专属文案；正文绝不进入错误。
+        let body = r#"{"error":{"message":"This model's maximum context length is 8192 tokens"}}"#;
+        let err = map_status_to_error(reqwest::StatusCode::BAD_REQUEST, body);
+        let BackendError::InvalidResponse(message) = err else {
+            panic!("expected InvalidResponse");
+        };
+        assert_eq!(message, TERMBASE_CONTEXT_LENGTH_MESSAGE);
+        assert!(!message.contains("8192"));
+        assert!(!message.contains("tokens"));
+    }
+
+    #[test]
+    fn unrelated_400_body_stays_generic_without_exposing_body() {
+        let body = r#"{"error":{"message":"invalid request body: bad json"}}"#;
+        let err = map_status_to_error(reqwest::StatusCode::BAD_REQUEST, body);
+        let BackendError::Network(message) = err else {
+            panic!("expected Network");
+        };
+        assert_eq!(message, "HTTP 400");
+        assert!(!message.contains("bad json"));
+    }
+
+    #[test]
     fn request_body_selects_stream_flag() {
         let config = crate::config::default_config();
         let request = BackendRequest {
             text: "hello".to_string(),
             target_language: "简体中文".to_string(),
+            prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
         };
 
         let once = serde_json::to_value(build_request_body(&config, &request, false))
@@ -524,6 +559,50 @@ mod tests {
 
         assert_eq!(once["stream"], serde_json::Value::Bool(false));
         assert_eq!(streaming["stream"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn non_empty_term_block_reaches_official_body_system_message() {
+        // FR-005/T-007：build_system_prompt 的非空术语块原样进入 Official API 系统消息。
+        let effective = crate::termbase::test_support::non_empty_effective();
+        let prompt = build_system_prompt("简体中文", &effective);
+        let request = BackendRequest {
+            text: "a function call".to_string(),
+            target_language: "简体中文".to_string(),
+            prompt: prompt.clone(),
+        };
+
+        let body = serde_json::to_value(build_request_body(
+            &crate::config::default_config(),
+            &request,
+            false,
+        ))
+        .expect("serialize body");
+        assert_eq!(body["messages"][0]["role"], "system");
+        let content = body["messages"][0]["content"].as_str().expect("content");
+        assert_eq!(content, prompt, "系统消息必须携带同一个非空术语块");
+        assert!(content.contains("function"));
+        assert!(content.contains("函数"));
+    }
+
+    #[test]
+    fn empty_term_set_leaves_template_unchanged() {
+        let prompt = build_system_prompt("简体中文", &EffectiveTermbase::empty());
+        let request = BackendRequest {
+            text: "hello".to_string(),
+            target_language: "简体中文".to_string(),
+            prompt: prompt.clone(),
+        };
+
+        let body = serde_json::to_value(build_request_body(
+            &crate::config::default_config(),
+            &request,
+            false,
+        ))
+        .expect("serialize body");
+        let content = body["messages"][0]["content"].as_str().expect("content");
+        assert_eq!(content, prompt);
+        assert!(!content.contains("function"));
     }
 
     #[tokio::test]

@@ -14,7 +14,7 @@ interface TranslationRecordContentProps {
   summary: TranslationHistorySummary;
   body?: TranslationHistoryEntry;
   loading?: boolean;
-  pendingAction?: "copyAll" | "retranslate";
+  pendingAction?: "copyAll";
   onCopyAll(): void;
 }
 

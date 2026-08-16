@@ -139,13 +139,15 @@ export function WebGatewayPanel({
                     <span className="min-w-0 break-words text-ink">{account.displayName}</span>
                     <span className="shrink-0 text-ink-soft">{accountStatusLabels[account.status]}{account.cooldownRemainingSeconds !== undefined ? ` ${account.cooldownRemainingSeconds}s` : ""}</span>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2">
                     <Switch checked={account.enabled} disabled={!account.actions.canToggleEnabled || pending} onCheckedChange={(enabled) => void onSetAccountEnabled(account.accountId, enabled)} aria-label={`启用 ${account.displayName}`} />
                     <IconButton label="重命名账号" variant="ghost" size="sm" disabled={!account.actions.canRename || pending} onClick={() => { setRenameAccountId(account.accountId); setDisplayName(account.displayName); }}><Pencil /></IconButton>
                     <IconButton label="上移账号" variant="ghost" size="sm" disabled={!account.actions.canMoveUp || pending} onClick={() => void onMoveAccount(account.accountId, "up")}><ArrowUp /></IconButton>
                     <IconButton label="下移账号" variant="ghost" size="sm" disabled={!account.actions.canMoveDown || pending} onClick={() => void onMoveAccount(account.accountId, "down")}><ArrowDown /></IconButton>
-                     {account.actions.canLogin ? <Button size="sm" variant={account.status === "loggedOut" ? "primary" : "outline"} onClick={() => void onBeginAccountLogin(account.accountId)} disabled={pending}><LogIn />{account.status === "loggedOut" ? "登录" : "重新登录"}</Button> : null}
-                     {account.actions.canTest ? <Button size="sm" variant="outline" onClick={() => void onTestAccount(account.accountId)} disabled={pending}>测试</Button> : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {account.actions.canLogin ? <Button size="sm" variant={account.status === "loggedOut" ? "primary" : "outline"} onClick={() => void onBeginAccountLogin(account.accountId)} disabled={pending}><LogIn />{account.status === "loggedOut" ? "登录" : "重新登录"}</Button> : null}
+                    {account.actions.canTest ? <Button size="sm" variant="outline" onClick={() => void onTestAccount(account.accountId)} disabled={pending}>测试</Button> : null}
                     {account.actions.canLogout ? <Button size="sm" variant="outline" onClick={() => onRequestDestructiveAction({ accountId: account.accountId, displayName: account.displayName, kind: "logout" })} disabled={pending}>退出登录</Button> : null}
                     {account.actions.canDelete ? <IconButton label="删除账号" variant="danger" size="sm" disabled={pending} onClick={() => onRequestDestructiveAction({ accountId: account.accountId, displayName: account.displayName, kind: "delete" })}><Trash2 /></IconButton> : null}
                   </div>

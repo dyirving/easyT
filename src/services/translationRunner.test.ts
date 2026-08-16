@@ -73,9 +73,9 @@ describe("runTranslationRequest history orchestration", () => {
         warning: { kind: "saveTimedOut", message: "保存超时" },
       },
     });
-    await runTranslationRequest(requestId, "source", DEFAULT_CONFIG, true, "old-id");
+    await runTranslationRequest(requestId, "source", DEFAULT_CONFIG, true);
     expect(mockedTranslateText).toHaveBeenCalledWith(
-      expect.objectContaining({ forceRefresh: true, replaceEntryId: "old-id" }),
+      expect.objectContaining({ forceRefresh: true }),
     );
     expect(useTranslationStore.getState()).toMatchObject({
       status: "success",

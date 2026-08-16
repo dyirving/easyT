@@ -1,4 +1,4 @@
-import { Database } from "lucide-react";
+import { BookMarked, Database } from "lucide-react";
 import { useState } from "react";
 import { ConfirmDialog, StatusBanner } from "@/components/patterns";
 import {
@@ -7,7 +7,9 @@ import {
   SettingsHeader,
   SettingsRow,
   ShortcutInput,
+  TermbaseDialog,
   useSettingsController,
+  useTermbaseController,
   WebGatewayPanel,
 } from "@/components/settings";
 import {
@@ -34,7 +36,9 @@ export function SettingsPage({
   onCacheCleared?: () => void;
 }) {
   const controller = useSettingsController();
+  const termbase = useTermbaseController();
   const [cacheOpen, setCacheOpen] = useState(false);
+  const [termbaseOpen, setTermbaseOpen] = useState(false);
   return (
     <div className="flex h-full flex-col">
       <SettingsHeader onBack={onBack} />
@@ -216,6 +220,28 @@ export function SettingsPage({
               </Button>
             }
           />
+          <SettingsRow
+            title="术语表"
+            description={
+              termbase.phase === "ready"
+                ? `已保存 ${termbase.totalCount} 条术语；翻译时优先采用指定译法`
+                : termbase.phase === "error"
+                  ? "术语表状态不可用"
+                  : "正在读取术语表…"
+            }
+            control={
+              <Button variant="outline" onClick={() => setTermbaseOpen(true)}>
+                <BookMarked />管理术语表
+              </Button>
+            }
+          />
+          {termbase.snapshot?.warning ? (
+            <StatusBanner
+              tone="warning"
+              announcement="polite"
+              description={termbase.snapshot.warning.message}
+            />
+          ) : null}
           <div className="flex gap-2">
             <Button
               variant="primary"
@@ -260,6 +286,11 @@ export function SettingsPage({
         open={cacheOpen}
         onClose={() => setCacheOpen(false)}
         onCacheCleared={onCacheCleared}
+      />
+      <TermbaseDialog
+        open={termbaseOpen}
+        onClose={() => setTermbaseOpen(false)}
+        controller={termbase}
       />
       <ConfirmDialog
         open={Boolean(controller.accountDestructiveIntent)}

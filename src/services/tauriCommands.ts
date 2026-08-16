@@ -9,6 +9,8 @@ import {
   type HistoryCommitOutcome,
   type HistorySnapshot,
   type SaveConfigResult,
+  type TermEntryInput,
+  type TermbaseSnapshot,
   type TranslationHistoryEntry,
   type QwenSessionStatus,
   type QwenAccountPoolSnapshot,
@@ -82,7 +84,6 @@ export interface TranslateTextRequest {
   text: string;
   targetLanguage: string;
   forceRefresh: boolean;
-  replaceEntryId?: string;
   onPhaseChanged: (event: PhaseChangedEvent) => void;
   onContentDelta?: (delta: string) => void;
 }
@@ -128,7 +129,6 @@ export async function translateText(
     text: request.text,
     targetLanguage: request.targetLanguage,
     forceRefresh: request.forceRefresh,
-    replaceEntryId: request.replaceEntryId ?? null,
     onEvent: channel,
   });
 }
@@ -245,6 +245,43 @@ export async function copyTranslation(text: string): Promise<void> {
 }
 
 /**
+ * 术语表：完整权威快照；每次成功操作都整体替换前端快照。
+ */
+export async function getTermbase(): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("get_termbase");
+}
+
+export async function createTermbaseEntry(
+  input: TermEntryInput,
+): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("create_termbase_entry", { input });
+}
+
+export async function updateTermbaseEntry(
+  id: string,
+  input: TermEntryInput,
+): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("update_termbase_entry", { id, input });
+}
+
+export async function deleteTermbaseEntry(id: string): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("delete_termbase_entry", { id });
+}
+
+export async function setTermbaseEnabled(
+  enabled: boolean,
+): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("set_termbase_enabled", { enabled });
+}
+
+export async function setTermbaseEntryEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<TermbaseSnapshot> {
+  return invoke<TermbaseSnapshot>("set_termbase_entry_enabled", { id, enabled });
+}
+
+/**
  * 把 invoke 抛出的错误统一转换为 CommandError
  * 用于在 UI 中展示友好的错误文案
  */
@@ -280,7 +317,15 @@ export function toCommandError(e: unknown): CommandError {
  * 区分原则：
  * - 网络/超时/响应解析：可重试（瞬时故障）
  * - 配置/未授权/限流：不可重试（需用户介入修改配置）
+ *
+ * FR-010：以下两个常量与 Rust `translation_backend/error.rs` 保持同步。
+ * 后端在请求携带非空有效术语集且失败通用时，会把建议追加到错误消息，
+ * 前端据此在 hint 中呈现；可识别的上下文过长错误则映射为专属提示。
  */
+export const TERMBASE_CONTEXT_LENGTH_MESSAGE = "内容过长，超出上游上下文限制";
+export const TERMBASE_CONTEXT_SUGGESTION =
+  "如果开启了术语表，可尝试精简术语或临时关闭术语表后重试";
+
 export interface FriendlyError {
   friendlyMessage: string;
   hint?: string;
@@ -292,12 +337,41 @@ export function formatCommandError(err: Pick<CommandError, "message" | "code">):
   return err.code ? `${err.message} [${err.code}]` : err.message;
 }
 
+/** FR-010：按后端错误消息中的固定文案追加术语表建议或替换为专属提示。 */
+function applyTermbaseContextHints(
+  friendly: FriendlyError,
+  message?: string,
+): FriendlyError {
+  if (!message) return friendly;
+  if (message.includes(TERMBASE_CONTEXT_LENGTH_MESSAGE)) {
+    return {
+      ...friendly,
+      friendlyMessage: TERMBASE_CONTEXT_LENGTH_MESSAGE,
+      hint: TERMBASE_CONTEXT_SUGGESTION,
+      retryable: true,
+    };
+  }
+  if (message.includes(TERMBASE_CONTEXT_SUGGESTION)) {
+    return {
+      ...friendly,
+      hint: friendly.hint
+        ? `${friendly.hint}。${TERMBASE_CONTEXT_SUGGESTION}`
+        : TERMBASE_CONTEXT_SUGGESTION,
+    };
+  }
+  return friendly;
+}
+
 export function toFriendlyError(err: CommandError): FriendlyError {
-  const withCode = (friendly: Omit<FriendlyError, "code">): FriendlyError => ({
-    ...friendly,
-    friendlyMessage: err.code ? err.message : friendly.friendlyMessage,
-    code: err.code,
-  });
+  const withCode = (friendly: Omit<FriendlyError, "code">): FriendlyError =>
+    applyTermbaseContextHints(
+      {
+        ...friendly,
+        friendlyMessage: err.code ? err.message : friendly.friendlyMessage,
+        code: err.code,
+      },
+      err.message,
+    );
   switch (err.kind) {
     case ERROR_KIND.NoSelectedText:
       return withCode({
@@ -408,10 +482,13 @@ export function toFriendlyError(err: CommandError): FriendlyError {
       });
     case ERROR_KIND.Internal:
     default:
-      return {
-        friendlyMessage: err.message || "内部错误",
-        hint: "请重启应用，若问题持续请反馈",
-        retryable: false,
-      };
+      return applyTermbaseContextHints(
+        {
+          friendlyMessage: err.message || "内部错误",
+          hint: "请重启应用，若问题持续请反馈",
+          retryable: false,
+        },
+        err.message,
+      );
   }
 }

@@ -192,7 +192,7 @@ impl TranslationRequestManager {
 ///
 /// latest-wins 仍由 TranslationRequestManager 唯一负责。
 /// WebGateway 不会自动创建登录窗口或回退到付费 API。
-/// forceRefresh 为 true 时表示"重新翻译"（绕过缓存读取并在成功后覆盖共享缓存）。
+/// forceRefresh 为 true 时表示刷新当前译文（绕过缓存读取并在成功后覆盖共享缓存）。
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn translate_text(
@@ -204,18 +204,11 @@ pub async fn translate_text(
     text: String,
     target_language: String,
     force_refresh: bool,
-    replace_entry_id: Option<String>,
     on_event: Channel<TranslationProgressEvent>,
 ) -> Result<TranslationResult, TranslationCommandError> {
     if request_id.trim().is_empty() {
         return Err(TranslationCommandError::from_app(
             AppError::ConfigInvalid("请求 ID 不能为空".to_string()),
-            None,
-        ));
-    }
-    if replace_entry_id.is_some() && !force_refresh {
-        return Err(TranslationCommandError::from_app(
-            AppError::ConfigInvalid("历史替换只能用于重新翻译".to_string()),
             None,
         ));
     }
@@ -228,6 +221,8 @@ pub async fn translate_text(
     let request = BackendRequest {
         text: text.clone(),
         target_language: target_language.clone(),
+        // Prompt 由 TranslationBackend::translate 在缓存前按有效术语集构造。
+        prompt: String::new(),
     };
     let options = TranslationOptions { force_refresh };
     let sink: Arc<dyn TranslationProgress> = Arc::new(ChannelProgress {
@@ -264,7 +259,6 @@ pub async fn translate_text(
             let history_outcome = history
                 .commit_entry(
                     draft,
-                    replace_entry_id,
                     config.translation_history_limit,
                     HistoryCommitEligibility::new(request_eligibility),
                 )

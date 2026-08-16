@@ -5,14 +5,16 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Approved |
-| 版本 | 0.1 |
+| 版本 | 0.8 |
 | 最后更新 | 2026-08-16 |
-| 目标项目 | easyT 2.x / Qwen WebGateway |
+| 目标项目 | easyT 2.4.0 / Qwen WebGateway |
 | 预期实施者 | Model-neutral coding agent |
 | 需求来源 | `docs/Qwen多账号轮询需求与架构共识文档.md` v1.0 |
-| 代码基线 | `521281b0077c4511be3937793f84578d17fd39ef` |
+| 设计基线 | `521281b0077c4511be3937793f84578d17fd39ef` |
+| 实现提交 | `44816fdefa06ca7a925f90cf2802879cf1072298` |
+| 当前版本提交 | `acf0757` |
 | canonical 路径 | `SDD-qwen-multi-account-round-robin.md` |
-| 实施状态 | Implemented; pending authorized real-account and narrow-window manual validation |
+| 实施状态 | Implemented; 自动验证完成，待授权真实账号与窄窗口人工验收；见 0.5、0.6 和 15.2。 |
 
 ### 0.1 修订历史
 
@@ -25,6 +27,7 @@
 | 0.5 | 2026-08-16 | Ticket 05 implementation record: Qwen stable error codes, one-shot retry/probe orchestration, runtime cooldown/pending snapshots, and manual account test IPC/UI. |
 | 0.6 | 2026-08-16 | Ticket 06 implementation record: single-attempt streaming failures with tracked discard probes and non-blocking Qwen pool shutdown. |
 | 0.7 | 2026-08-16 | Ticket 07 release verification: full Rust/frontend tests, typecheck, frontend build, clippy, format, release build, diff hygiene, capability check, and explicit manual-validation gaps. |
+| 0.8 | 2026-08-16 | Final implementation record for easyT 2.4.0: refreshed full-suite/build evidence, implementation deviations, residual manual acceptance, and historical-design labeling. |
 
 ### 0.2 Tickets 03-04 implementation evidence
 
@@ -48,7 +51,37 @@ Verification on 2026-08-16: `cargo fmt --manifest-path src-tauri/Cargo.toml -- -
 
 The pool owns background probe abort handles. Its shutdown marks scheduling unavailable, cancels the active login watcher, aborts probes without awaiting upstream network, and releases all leases; a probe interrupted before its health commit leaves its previous health unchanged. The tray shutdown invokes this pool cleanup before closing the login window and continuing existing cache/history cleanup. Controlled loopback tests cover partial streaming output/error preservation, exactly one formal request plus one discard probe, busy exclusion, progress isolation, success/cooldown/expired outcomes, user and latest-wins cancellation, tracked task cleanup, and shutdown lease release. Verification on 2026-08-16: `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`; `cargo test --manifest-path src-tauri/Cargo.toml qwen --no-fail-fast` (74 passed); focused translation backend/cache/history/progress tests (16/12/1/3 passed); `npm run typecheck`; targeted settings/service Vitest suites (13 passed); and `git diff --check`. No real Qwen credential/network was used; Ticket 07 release verification, full test/build/clippy/release-build, and real-account manual validation remain unexecuted.
 
-> 本 SDD 是实施前设计文档。项目所有者明确评审并将状态改为 `Approved` 前，coding agent MUST NOT 开始业务代码实施。批准后，接口、架构、持久化、迁移、错误码或运行时行为发生变化时，MUST 在同一变更中更新本文。
+### 0.5 Final implementation record for 2.4.0
+
+`44816fd` delivered the Qwen account-pool implementation and `acf0757` released it as easyT 2.4.0. The runtime route is now `TranslationBackend -> WebGateway -> QwenAccountPool -> QwenRequestExecutor`. The pool owns registry-backed account inventory, account-local sessions/credentials/profiles, fixed and Round Robin leases, health transitions, one-shot retry/probe orchestration, streaming background probes, and shutdown cleanup. The settings surface consumes authoritative account snapshots and exposes account create, login, rename, enable, reorder, logout, delete, global test, and fixed-account test commands.
+
+Final automated evidence on 2026-08-16:
+
+- `cargo check --manifest-path src-tauri/Cargo.toml` passed.
+- `cargo test --manifest-path src-tauri/Cargo.toml --lib` passed: 225 tests.
+- `cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings` passed.
+- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check` passed.
+- `cargo build --release --manifest-path src-tauri/Cargo.toml` passed.
+- `npm run typecheck` passed.
+- `npm test -- --run` passed: 18 files and 95 tests.
+- `npm run build` passed. Current output reports `index-*.js` gzip 81.19 KiB and `index-*.css` gzip 4.66 KiB; this is an output record, not a pre/post bundle-growth comparison.
+- `git diff --check` passed before the implementation and version commits.
+
+No real Qwen credential or network request was made. The remaining release-acceptance work is authorized real-account/profile isolation and A/B/A validation, manual rendering/accessibility validation at 520x390 and 360x200, and explicit evidence for the cache/history/progress regression cases listed in Ticket 07.
+
+### 0.6 Implementation deviations and compatibility residue
+
+The following records are authoritative for the as-built implementation. They prevent this SDD from claiming design conformance that has not been demonstrated.
+
+| ID | Approved design | As-built evidence | Impact and required disposition |
+|---|---|---|---|
+| DEV-001 | Section 6.5 required a preflight proving deletion of the target WebView profile Cookie before re-login. | `qwen/session.rs::is_fresh_login_ticket` rejects a ticket equal to the already persisted credential; no WebView2 Cookie-deletion API prototype or implementation exists. | Identical stale tickets are rejected, but this is not equivalent to clearing the profile Cookie. Owner approval is required before claiming the re-login contract fully satisfied. |
+| DEV-002 | The consensus error directory reserves `QW-POOL-010` for mixed unavailable accounts and `QW-STORAGE-006` for profile initialization failure. | `qwen/error.rs` currently maps mixed unavailable to `QW-POOL-006`; it has no separate `QW-POOL-010` or `QW-STORAGE-006` variant. | Public error-code semantics differ from the approved directory. Reconcile the code and the consensus document in a follow-up before treating the error catalog as release-final. |
+| DEV-003 | The consensus document prohibits retaining two long-term account-management paths after migration. | `WebGateway` retains `legacy_qwen_session` and the old `begin_web_login`, `get_web_login_status`, and `logout_web_account` commands as a facade over the first enabled account while new account commands are present. | Translation uses the account pool, but legacy IPC remains. Remove or formally approve this compatibility surface before a later major cleanup. |
+
+### 0.7 Reading this document after implementation
+
+Sections 1 through 17 preserve the approved design and implementation protocol used to create the feature. Headings such as "current system context", "proposed design", and the phased coding-agent instructions are historical design-baseline material, not a statement that the repository remains pre-implementation. For current release status, verification evidence, deviations, and manual-acceptance gaps, use Sections 0.5, 0.6, and 15.2.
 
 ## 1. 执行摘要
 
@@ -144,7 +177,7 @@ The pool owns background probe abort handles. Its shutdown marks scheduling unav
 | NFR-010 | 可维护性 | 账号池、注册表、调度、session 和单次协议执行 MUST 有明确所有权。 | 依赖图符合本文；不出现前端调度或 adapter 持久化注册表。 |
 | NFR-011 | 体积 | 前端 JS gzip 增长超过 10 KiB 或 CSS gzip 超过 5 KiB MUST 解释并评审。 | 实施前后 production bundle 记录。 |
 
-## 4. 当前系统上下文
+## 4. 实施前系统上下文（设计基线）
 
 ### 4.1 当前调用路径
 
@@ -184,7 +217,7 @@ flowchart TD
 - Qwen `sse_decoder.rs` 保持协议解码职责，只调整错误映射接口所需的最小代码。
 - `src-tauri/capabilities/default.json` 继续只授权 `main`。
 
-## 5. 提议设计
+## 5. 批准设计（实施基准）
 
 ### 5.1 架构总览
 
@@ -927,13 +960,13 @@ git diff --check
 | ID | 问题 | 决策来源 | 阻塞 | 默认设计 |
 |---|---|---|---|---|
 | Q-001 | 项目是否保证同一数据目录只有一个 easyT 进程写账号注册表？ | 项目所有者/运行模型 | 否，当前 SDD 评审项 | 当前按单进程；若不保证，SDD 批准前升级为阻塞并设计进程锁。 |
-| Q-002 | Tauri/WebView2 API 能否在保留凭证文件时可靠删除 profile 中目标 Cookie？ | 实施 preflight/prototype | 是 | 必须验证；不能验证则提交 DEV，不得接受旧 Cookie。 |
-| Q-003 | 真实双账号凭证是否可用于发布前人工验证？ | 项目所有者 | 否，代码实施不阻塞 | 未授权则明确未执行，但不能宣称真实账号验收完成。 |
+| Q-002 | Tauri/WebView2 API 能否在保留凭证文件时可靠删除 profile 中目标 Cookie？ | 实施 preflight/prototype | 是 | 未完成；已登记为 DEV-001。不得以当前相同-ticket 检查替代该 API 能力的验证。 |
+| Q-003 | 真实双账号凭证是否可用于发布前人工验证？ | 项目所有者 | 否，代码实施不阻塞 | 未授权；真实账号/profile 隔离和轮询验收未执行，不能宣称完成。 |
 
 ## 16. Coding Agent 执行约束
 
 - MUST 遵守仓库 `AGENTS.md`、根 `CONTEXT.md`、共识文档、UI Kit 文档及本 SDD。
-- MUST 保留工作区无关修改，不恢复 `tsconfig.json` 或其他用户变更。
+- MUST 保留工作区无关修改，不恢复或夹带其他用户变更。
 - MUST NOT 进行依赖升级、视觉改版、Prompt/缓存/历史 schema 重构或 Qwen DTO 顺手重写。
 - MUST 先实施并测试合同/数据，再接入网络和 UI。
 - MUST 在发现仓库与 SDD 冲突时执行 deviation protocol，不得静默解释。
@@ -943,7 +976,7 @@ git diff --check
 
 - **必需评审者：** 项目所有者；安全/持久化变更由实施评审同时核对。
 - **批准门槛：** §5～§8 的状态、IPC、schema、迁移、错误和超时合同明确接受；Q-001 默认假设接受；Q-002 被标记为实施 preflight 阻塞验证。
-- **批准动作：** 评审者明确回复批准后，将状态改为 `Approved` 并记录 0.2 修订。
+- **批准动作：** 已完成。后续仅能通过同一变更更新本文、修订历史和适用的 deviation record。
 - **更新触发：** module ownership、command/DTO、schema、错误码、状态优先级、重试/复检、timeout、migration、security、rollback 或测试命令变化。
 - **同步规则：** 批准后的设计变化必须与代码同 commit 更新本文及修订历史。
 

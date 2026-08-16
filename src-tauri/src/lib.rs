@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod platform;
 mod shortcut;
+mod termbase;
 mod translation_backend;
 mod translation_history;
 mod window_state;
@@ -17,6 +18,10 @@ use commands::{
         clear_translation_history, get_translation_history_entry, initialize_translation_history,
     },
     selection::capture_selected_text,
+    termbase::{
+        create_termbase_entry, delete_termbase_entry, get_termbase, set_termbase_enabled,
+        set_termbase_entry_enabled, update_termbase_entry,
+    },
     translate::{test_api_connection, translate_text, TranslationRequestManager},
     web_gateway::{
         begin_qwen_account_login, begin_web_login, create_qwen_account, delete_qwen_account,
@@ -97,9 +102,20 @@ pub fn run() {
             let http_client = reqwest::Client::new();
             // L1 立即可用；L2 在专用 worker 中异步初始化，失败时静默降级到 L1。
             let cache = TranslationCache::start(&data_dir);
-            let backend = TranslationBackend::new(http_client, Arc::clone(&cache), &data_dir)
-                .map_err(|error| std::io::Error::other(error.safe_message()))?;
+            let termbase = Arc::new(
+                termbase::Termbase::open(&data_dir)
+                    .map_err(|error| std::io::Error::other(error.to_string()))?
+                    .0,
+            );
+            let backend = TranslationBackend::new(
+                http_client,
+                Arc::clone(&cache),
+                Arc::clone(&termbase),
+                &data_dir,
+            )
+            .map_err(|error| std::io::Error::other(error.safe_message()))?;
             app.manage(cache);
+            app.manage(termbase);
             app.manage(Arc::new(backend));
             let history = TranslationHistory::start(&data_dir, history_limit);
             app.manage(history);
@@ -176,6 +192,12 @@ pub fn run() {
             initialize_translation_history,
             get_translation_history_entry,
             clear_translation_history,
+            get_termbase,
+            create_termbase_entry,
+            update_termbase_entry,
+            delete_termbase_entry,
+            set_termbase_enabled,
+            set_termbase_entry_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

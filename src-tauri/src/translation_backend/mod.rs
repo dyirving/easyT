@@ -33,11 +33,13 @@ use std::future::Future;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
+use crate::termbase::{EffectiveTermbase, Termbase};
 
 use self::cache::{
     is_definitely_oversized, prepare_cache_input, NormalizedCacheInput, TranslationCache,
 };
 use self::official_api::OfficialApiAdapter;
+use self::prompt::build_system_prompt;
 use self::web_gateway::WebGateway;
 
 pub(crate) fn connection_success_message(prefix: &str, result: &BackendResult) -> String {
@@ -52,12 +54,14 @@ pub struct TranslationBackend {
     official_api: OfficialApiAdapter,
     web_gateway: Arc<WebGateway>,
     cache: Arc<TranslationCache>,
+    termbase: Arc<Termbase>,
 }
 
 impl TranslationBackend {
     pub fn new(
         http_client: reqwest::Client,
         cache: Arc<TranslationCache>,
+        termbase: Arc<Termbase>,
         app_data: &std::path::Path,
     ) -> Result<Self, crate::translation_backend::web_gateway::qwen::QwenError> {
         let official_api = OfficialApiAdapter::new(http_client.clone());
@@ -66,6 +70,7 @@ impl TranslationBackend {
             official_api,
             web_gateway,
             cache,
+            termbase,
         })
     }
 
@@ -76,18 +81,28 @@ impl TranslationBackend {
 
     /// 翻译入口
     ///
+    /// 在缓存策略查询前解析一次有效术语集（SDD §8.1），同一
+    /// `EffectiveTermbase` 生成缓存指纹与共享 Prompt；Adapter 不参与匹配。
     /// 输入校验 → 策略（Use/Refresh/Bypass）→ L1 命中即返 / miss 走 Adapter。
     /// 成功后只有可缓存结果写入；缓存错误不得改变翻译结果语义。
     pub async fn translate(
         &self,
         config: &AppConfig,
-        request: BackendRequest,
+        mut request: BackendRequest,
         options: TranslationOptions,
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<TranslationOutcome, BackendError> {
         validate_translate_request(&request, config)?;
+        let effective = self
+            .termbase
+            .resolve(&request.text, &request.target_language);
+        request.prompt = build_system_prompt(&request.target_language, &effective);
+        let input = prepare_cache_input(
+            &request.text,
+            &request.target_language,
+            effective.fingerprint(),
+        );
         let policy = resolve_cache_policy(config, options);
-        let input = prepare_cache_input(&request.text, &request.target_language);
         if policy == CachePolicy::Use && !is_definitely_oversized(&input) {
             progress.phase(TranslationPhase::CheckingCache, None);
         }
@@ -118,7 +133,9 @@ impl TranslationBackend {
                 }
             }
         };
-        run_translation_with_cache(&self.cache, &input, policy, fetch).await
+        run_translation_with_cache(&self.cache, &input, policy, fetch)
+            .await
+            .map_err(|error| annotate_termbase_suggestion(&effective, error))
     }
 
     /// 测试连接：必须通过当前 Adapter 进行真实轻量请求
@@ -153,6 +170,45 @@ fn progress_backend_source(config: &AppConfig) -> ProgressBackendSource {
         mode: config.backend_mode,
         provider: provider.to_string(),
     }
+}
+
+/// FR-010：非空有效术语集的通用失败只追加非断言建议，错误分类不变。
+///
+/// - 空有效术语集、取消（Cancelled）与已识别的上下文过长错误不加建议。
+/// - Qwen 稳定错误码（认证/限流/超时等）各有专属提示，追加术语表建议会造成噪音。
+/// - 识别后的专用文案见 [`TERMBASE_CONTEXT_LENGTH_MESSAGE`]；建议见
+///   [`TERMBASE_CONTEXT_SUGGESTION`]。
+///
+/// 该请求不会保留 Termbase 状态的可变引用：有效集是不可变的
+/// `EffectiveTermbase` 快照，fetch 闭包只移动 `request` 与进度回调（§9.1）。
+fn annotate_termbase_suggestion(effective: &EffectiveTermbase, error: BackendError) -> BackendError {
+    use crate::translation_backend::error::{
+        TERMBASE_CONTEXT_LENGTH_MESSAGE, TERMBASE_CONTEXT_SUGGESTION,
+    };
+    if effective.is_empty() {
+        return error;
+    }
+    if let BackendError::InvalidResponse(message) = &error {
+        if message == TERMBASE_CONTEXT_LENGTH_MESSAGE {
+            return error;
+        }
+    }
+    let append = |message: String| format!("{message}。{TERMBASE_CONTEXT_SUGGESTION}");
+    let annotated = match error {
+        BackendError::Cancelled => return error,
+        BackendError::Network(message) => BackendError::Network(append(message)),
+        BackendError::ProtocolMismatch(message) => BackendError::ProtocolMismatch(append(message)),
+        BackendError::PartialResponse(message) => BackendError::PartialResponse(append(message)),
+        BackendError::InvalidResponse(message) => BackendError::InvalidResponse(append(message)),
+        BackendError::StreamingUnsupported(message) => {
+            BackendError::StreamingUnsupported(append(message))
+        }
+        BackendError::ConfigInvalid(message) => BackendError::ConfigInvalid(append(message)),
+        BackendError::Internal(message) => BackendError::Internal(append(message)),
+        other => return other,
+    };
+    log::warn!("termbase_prompt_context_error: kind={:?}", annotated.kind());
+    annotated
 }
 
 fn validate_translate_request(
@@ -284,8 +340,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
+    use crate::termbase::test_support::non_empty_effective;
     use crate::translation_backend::cache::{
         prepare_cache_input, test_support::TestDir, TranslationCache,
+    };
+    use crate::translation_backend::error::{
+        TERMBASE_CONTEXT_LENGTH_MESSAGE, TERMBASE_CONTEXT_SUGGESTION,
     };
 
     fn sample_result(text: &str) -> BackendResult {
@@ -375,6 +435,7 @@ mod tests {
         let request = BackendRequest {
             text: "   ".to_string(),
             target_language: "简体中文".to_string(),
+            prompt: String::new(),
         };
         let err = validate_translate_request(&request, &config).expect_err("should reject");
         assert!(matches!(err, BackendError::ConfigInvalid(_)));
@@ -387,6 +448,7 @@ mod tests {
         let request = BackendRequest {
             text: "abcdef".to_string(),
             target_language: "简体中文".to_string(),
+            prompt: String::new(),
         };
         let err = validate_translate_request(&request, &config).expect_err("should reject");
         assert!(matches!(err, BackendError::ConfigInvalid(_)));
@@ -436,6 +498,60 @@ mod tests {
         );
     }
 
+    // ===== FR-010 非空术语集通用失败建议（T-012）=====
+
+    #[test]
+    fn empty_effective_set_never_appends_suggestion() {
+        let error = BackendError::Network("网络请求失败".to_string());
+        let annotated =
+            annotate_termbase_suggestion(&EffectiveTermbase::empty(), error);
+        assert_eq!(annotated.safe_message(), "网络请求失败");
+        assert!(!annotated
+            .safe_message()
+            .contains(TERMBASE_CONTEXT_SUGGESTION));
+    }
+
+    #[test]
+    fn generic_failure_appends_suggestion_keeping_kind() {
+        let error = BackendError::Network("网络请求失败".to_string());
+        let annotated = annotate_termbase_suggestion(&non_empty_effective(), error);
+        assert!(matches!(annotated, BackendError::Network(_)));
+        assert!(annotated.safe_message().contains(TERMBASE_CONTEXT_SUGGESTION));
+
+        let error = BackendError::InvalidResponse("响应格式无效".to_string());
+        let annotated = annotate_termbase_suggestion(&non_empty_effective(), error);
+        assert!(matches!(annotated, BackendError::InvalidResponse(_)));
+        assert!(annotated.safe_message().contains(TERMBASE_CONTEXT_SUGGESTION));
+    }
+
+    #[test]
+    fn cancelled_and_recognized_context_length_are_not_annotated() {
+        let error = annotate_termbase_suggestion(&non_empty_effective(), BackendError::Cancelled);
+        assert!(matches!(error, BackendError::Cancelled));
+
+        let error = annotate_termbase_suggestion(
+            &non_empty_effective(),
+            BackendError::InvalidResponse(TERMBASE_CONTEXT_LENGTH_MESSAGE.to_string()),
+        );
+        assert!(matches!(error, BackendError::InvalidResponse(_)));
+        assert_eq!(error.safe_message(), TERMBASE_CONTEXT_LENGTH_MESSAGE);
+    }
+
+    #[test]
+    fn stable_qwen_codes_keep_their_own_hints() {
+        let error = annotate_termbase_suggestion(
+            &non_empty_effective(),
+            BackendError::Qwen(
+                crate::translation_backend::web_gateway::qwen::QwenError::upstream_rate_limited(),
+            ),
+        );
+        let BackendError::Qwen(qwen) = error else {
+            panic!("expected Qwen error");
+        };
+        assert_eq!(qwen.safe_message(), "Qwen 请求过于频繁");
+        assert!(!qwen.safe_message().contains(TERMBASE_CONTEXT_SUGGESTION));
+    }
+
     #[test]
     fn web_gateway_without_save_history_uses_policy() {
         let mut config = crate::config::default_config();
@@ -464,7 +580,7 @@ mod tests {
     #[test]
     fn use_policy_miss_fetches_stores_then_hits_without_network() {
         let cache = TranslationCache::memory_only_for_tests();
-        let input = prepare_cache_input("hello", "简体中文");
+        let input = prepare_cache_input("hello", "简体中文", &[0u8; 32]);
         let calls = Arc::new(AtomicUsize::new(0));
 
         let first = run_use(&cache, &input, "你好", Arc::clone(&calls));
@@ -519,7 +635,7 @@ mod tests {
         let dir = TestDir::new("oversized-stats");
         let cache = TranslationCache::start(&dir.0);
         cache.wait_until_persistent_ready().await;
-        let input = prepare_cache_input("hello", "简体中文");
+        let input = prepare_cache_input("hello", "简体中文", &[0u8; 32]);
         let oversized =
             "译".repeat(crate::translation_backend::cache::key::MAX_ENTRY_LOGICAL_BYTES as usize);
 
@@ -642,7 +758,7 @@ mod tests {
     }
 
     fn parse_input(text: &str, target: &str) -> NormalizedCacheInput {
-        prepare_cache_input(text, target)
+        prepare_cache_input(text, target, &[0u8; 32])
     }
 
     #[test]

@@ -10,6 +10,36 @@ use serde::Serialize;
 
 use crate::translation_backend::web_gateway::qwen::QwenError;
 
+/// 已识别的上游上下文过长错误（FR-010）：固定安全文案，绝不透出上游正文。
+/// 前端 `src/services/tauriCommands.ts` 的 `TERMBASE_CONTEXT_LENGTH_MESSAGE` 必须保持同步。
+pub(crate) const TERMBASE_CONTEXT_LENGTH_MESSAGE: &str = "内容过长，超出上游上下文限制";
+
+/// 非空有效术语集下通用失败追加的非断言建议（FR-010）：错误分类不变，仅追加建议。
+/// 前端 `src/services/tauriCommands.ts` 的 `TERMBASE_CONTEXT_SUGGESTION` 必须保持同步。
+pub(crate) const TERMBASE_CONTEXT_SUGGESTION: &str =
+    "如果开启了术语表，可尝试精简术语或临时关闭术语表后重试";
+
+/// 上游错误正文的上下文过长模式识别（FR-010）。
+///
+/// 只做模式判定，绝不把正文写入错误或日志；识别成功后由调用方映射为
+/// [`TERMBASE_CONTEXT_LENGTH_MESSAGE`]。模式（大小写不敏感）：
+/// - 英文：`context length`、`too long`、`token limit`、`input length`
+/// - 中文：`超出上下文`、`上下文长度`、`太长`
+pub(crate) fn is_context_length_pattern(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    [
+        "context length",
+        "too long",
+        "token limit",
+        "input length",
+        "超出上下文",
+        "上下文长度",
+        "太长",
+    ]
+    .iter()
+    .any(|pattern| lowered.contains(pattern))
+}
+
 /// 翻译后端统一错误
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -129,8 +159,47 @@ impl BackendError {
     }
 
     /// 返回不携带敏感上下文的用户可读消息
+    ///
+    /// FR-010：当通用失败的消息携带非空术语集建议（由 translate 编排追加）时，
+    /// 该消息只由固定安全文案拼接而成，可安全透传给 IPC。
     pub fn safe_message(&self) -> String {
         match self {
+            BackendError::Network(message) if message.contains(TERMBASE_CONTEXT_SUGGESTION) => {
+                message.clone()
+            }
+            BackendError::ProtocolMismatch(message)
+                if message.contains(TERMBASE_CONTEXT_SUGGESTION) =>
+            {
+                message.clone()
+            }
+            BackendError::PartialResponse(message)
+                if message.contains(TERMBASE_CONTEXT_SUGGESTION) =>
+            {
+                message.clone()
+            }
+            BackendError::InvalidResponse(message)
+                if message == TERMBASE_CONTEXT_LENGTH_MESSAGE =>
+            {
+                message.clone()
+            }
+            BackendError::InvalidResponse(message)
+                if message.contains(TERMBASE_CONTEXT_SUGGESTION) =>
+            {
+                message.clone()
+            }
+            BackendError::StreamingUnsupported(message)
+                if message.contains(TERMBASE_CONTEXT_SUGGESTION) =>
+            {
+                message.clone()
+            }
+            BackendError::ConfigInvalid(message)
+                if message.contains(TERMBASE_CONTEXT_SUGGESTION) =>
+            {
+                message.clone()
+            }
+            BackendError::Internal(message) if message.contains(TERMBASE_CONTEXT_SUGGESTION) => {
+                message.clone()
+            }
             BackendError::Network(_) => "网络请求失败".to_string(),
             BackendError::ProtocolMismatch(_) => "上游协议结构已变化".to_string(),
             BackendError::PartialResponse(_) => "上游响应不完整".to_string(),
@@ -170,5 +239,60 @@ mod tests {
             BackendError::PartialResponse("x".into()).kind(),
             BackendErrorKind::PartialResponse
         );
+    }
+
+    // ===== FR-010 上下文过长模式识别（T-012）=====
+
+    #[test]
+    fn context_length_patterns_are_recognized_without_case_sensitivity() {
+        let recognized = [
+            "This model's maximum context length is 8192 tokens",
+            "the request is too long",
+            "input length exceeds the limit",
+            "Request exceeded the token limit",
+            "请求内容超出上下文长度限制",
+            "输入太长，请精简后重试",
+            "超出上下文限制",
+        ];
+        for message in recognized {
+            assert!(
+                is_context_length_pattern(message),
+                "应当识别: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn unrelated_upstream_bodies_are_not_recognized() {
+        let ignored = [
+            "invalid api key",
+            "rate limit exceeded, retry later",
+            "model not found",
+            "服务器繁忙",
+            "参数错误: model 字段缺失",
+        ];
+        for message in ignored {
+            assert!(
+                !is_context_length_pattern(message),
+                "不应误识别: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn suggestion_carrying_messages_survive_safe_message() {
+        let err = BackendError::Network(format!("网络请求失败。{TERMBASE_CONTEXT_SUGGESTION}"));
+        let message = err.safe_message();
+        assert!(message.contains(TERMBASE_CONTEXT_SUGGESTION));
+        assert!(!message.contains("http"));
+    }
+
+    #[test]
+    fn plain_messages_keep_fixed_safe_text() {
+        let err = BackendError::Network(
+            "connection refused on https://secret.example.com/path".to_string(),
+        );
+        assert_eq!(err.safe_message(), "网络请求失败");
+        assert!(!err.safe_message().contains("secret.example.com"));
     }
 }

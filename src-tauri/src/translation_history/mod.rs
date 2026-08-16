@@ -31,8 +31,6 @@ pub enum HistoryError {
     EntryTooLarge,
     #[error("翻译历史记录不存在")]
     NotFound,
-    #[error("重新翻译的原记录不存在")]
-    ReplaceTargetNotFound,
     #[error("翻译历史记录 ID 无效")]
     InvalidEntryId,
     #[error("翻译历史上限无效")]
@@ -56,7 +54,6 @@ enum HistoryCommand {
     },
     Commit {
         draft: Box<HistoryEntryDraft>,
-        replace_entry_id: Option<String>,
         limit: u8,
         eligibility: HistoryCommitEligibility,
         reply: oneshot::Sender<Result<HistoryCommitOutcome, HistoryError>>,
@@ -112,7 +109,6 @@ impl TranslationHistory {
                         }
                         HistoryCommand::Commit {
                             draft,
-                            replace_entry_id,
                             limit,
                             eligibility,
                             reply,
@@ -124,7 +120,7 @@ impl TranslationHistory {
                                 .as_mut()
                                 .ok_or(HistoryError::Unavailable)
                                 .and_then(|db| {
-                                    db.commit_entry(*draft, replace_entry_id, limit, &eligibility)
+                                    db.commit_entry(*draft, limit, &eligibility)
                                 });
                             let _ = reply.send(result);
                         }
@@ -182,7 +178,6 @@ impl TranslationHistory {
     pub async fn commit_entry(
         &self,
         draft: HistoryEntryDraft,
-        replace_entry_id: Option<String>,
         limit: u8,
         eligibility: HistoryCommitEligibility,
     ) -> HistoryCommitOutcome {
@@ -190,7 +185,6 @@ impl TranslationHistory {
         let token = eligibility.clone();
         let command = HistoryCommand::Commit {
             draft: Box::new(draft),
-            replace_entry_id,
             limit,
             eligibility,
             reply,
@@ -330,7 +324,6 @@ mod tests {
                     false,
                     started_at,
                 ),
-                None,
                 5,
                 HistoryCommitEligibility::new(RequestEligibility::new(Arc::new(AtomicBool::new(
                     true,

@@ -70,7 +70,6 @@ export type HistoryCommitOutcome =
   | {
       status: "saved";
       summary: TranslationHistorySummary;
-      replacedEntryId?: string;
       evictedEntryIds: string[];
     }
   | { status: "notSaved"; warning: HistoryWarning };
@@ -151,6 +150,44 @@ export const TARGET_LANGUAGES: TargetLanguage[] = [
   { label: "English", value: "English" },
   { label: "日本語", value: "日本語" },
 ];
+
+/**
+ * 术语表一次性存储警告（Rust 权威；只在第一次快照中出现）
+ */
+export type TermbaseWarningKind = "storageRecovered" | "storageUnavailable";
+
+export interface TermbaseWarning {
+  kind: TermbaseWarningKind;
+  message: string;
+}
+
+/** 术语条目（Rust 权威快照中的不可变行） */
+export interface TermEntry {
+  id: string;
+  sourceTerm: string;
+  targetLanguage: string;
+  targetTerm: string;
+  enabled: boolean;
+  caseSensitive: boolean;
+  createdAtUtcMs: number;
+  updatedAtUtcMs: number;
+}
+
+/** 创建/更新条目时的用户输入 */
+export interface TermEntryInput {
+  sourceTerm: string;
+  targetLanguage: string;
+  targetTerm: string;
+  caseSensitive: boolean;
+}
+
+/** 术语表完整权威快照；每次成功操作由 Rust 整体返回，前端不推导匹配或排序 */
+export interface TermbaseSnapshot {
+  enabled: boolean;
+  entries: TermEntry[];
+  maximumEntries: number;
+  warning?: TermbaseWarning;
+}
 
 /**
  * 模型供应商标识

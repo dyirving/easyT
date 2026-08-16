@@ -25,9 +25,10 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::config::AppConfig;
-use crate::translation_backend::error::BackendError;
+use crate::translation_backend::error::{
+    is_context_length_pattern, BackendError, TERMBASE_CONTEXT_LENGTH_MESSAGE,
+};
 use crate::translation_backend::models::{BackendRequest, BackendResult, BackendSource};
-use crate::translation_backend::prompt::build_system_prompt;
 use crate::translation_backend::{TranslationPhase, TranslationProgressReporter};
 
 use super::sse_decoder::{DecodeOutcome, QwenSseDecoder};
@@ -117,6 +118,14 @@ where
                     });
                 }
                 DecodeOutcome::UpstreamError { code, message } => {
+                    if is_qwen_context_length_error(&code, &message) {
+                        log::warn!(
+                            "termbase_prompt_context_error: recognized Qwen context-length code={code}"
+                        );
+                        return Err(BackendError::InvalidResponse(
+                            TERMBASE_CONTEXT_LENGTH_MESSAGE.to_string(),
+                        ));
+                    }
                     log::warn!(
                         "Qwen 上游业务错误: code={}, message_len={}",
                         code,
@@ -159,7 +168,7 @@ pub(crate) fn prepare_qwen_request(
         body: build_qwen_request_body(
             &model,
             &request.text,
-            &request.target_language,
+            &request.prompt,
             &session_id,
             &req_id,
             save_history,
@@ -209,7 +218,7 @@ struct QwenMessageMetaDto {
 fn build_qwen_request_body(
     model: &str,
     text: &str,
-    target_language: &str,
+    prompt: &str,
     session_id: &str,
     req_id: &str,
     save_history: bool,
@@ -220,7 +229,6 @@ fn build_qwen_request_body(
         .unwrap_or(0)
         .to_string();
 
-    let prompt = build_system_prompt(target_language);
     let content = format!("{}\n\nUser: {}", prompt, text);
 
     QwenRequestBody {
@@ -332,6 +340,15 @@ pub(crate) fn map_status_to_error(status: reqwest::StatusCode) -> BackendError {
     }
 }
 
+/// FR-010：Qwen 上游可识别的上下文过长错误。
+///
+/// 业务错误码 4010（参数错误，含输入过长）或正文匹配
+/// [`is_context_length_pattern`]。只做判定，绝不把正文写入错误或日志；
+/// 匹配后由调用方映射为固定的 [`TERMBASE_CONTEXT_LENGTH_MESSAGE`]。
+fn is_qwen_context_length_error(code: &str, message: &str) -> bool {
+    code == "4010" || is_context_length_pattern(message)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
@@ -339,6 +356,7 @@ mod tests {
     use futures_util::stream;
 
     use super::*;
+    use crate::translation_backend::prompt::build_system_prompt;
     use crate::translation_backend::{PhaseProgress, TranslationProgress};
 
     #[derive(Default)]
@@ -399,7 +417,7 @@ mod tests {
         let temporary = build_qwen_request_body(
             "Qwen3.7-Max",
             "hello",
-            "简体中文",
+            "系统提示词",
             "session",
             "request",
             false,
@@ -409,12 +427,35 @@ mod tests {
         let persisted = build_qwen_request_body(
             "Qwen3.7-Max",
             "hello",
-            "简体中文",
+            "系统提示词",
             "session",
             "request",
             true,
         );
         assert!(!persisted.temporary);
+    }
+
+    #[test]
+    fn non_empty_term_block_reaches_qwen_body_verbatim() {
+        // FR-005/T-007：build_system_prompt 的非空术语块原样进入 Qwen 请求体 prompt。
+        let effective = crate::termbase::test_support::non_empty_effective();
+        let prompt = build_system_prompt("简体中文", &effective);
+        let body = build_qwen_request_body(
+            "Qwen3.7-Max",
+            "a function call",
+            &prompt,
+            "session",
+            "request",
+            false,
+        );
+
+        assert_eq!(
+            body.messages[0].content,
+            format!("{prompt}\n\nUser: a function call"),
+            "Qwen 请求体必须携带同一个非空术语块"
+        );
+        assert!(body.messages[0].content.contains("function"));
+        assert!(body.messages[0].content.contains("函数"));
     }
 
     #[tokio::test]
@@ -459,6 +500,74 @@ mod tests {
         .expect_err("EOF without completion must fail");
 
         assert!(matches!(error, BackendError::PartialResponse(_)));
+    }
+
+    #[test]
+    fn context_length_error_patterns_are_documented() {
+        // FR-010/T-012：识别模式与上游正文的对应关系（大小写不敏感，且不逐字回显）。
+        assert!(is_qwen_context_length_error(
+            "4010",
+            "The input text is too long"
+        ));
+        assert!(is_qwen_context_length_error(
+            "4001",
+            "The context length of the request exceeds the limit"
+        ));
+        assert!(is_qwen_context_length_error("1001", "请求内容超出上下文长度限制"));
+        assert!(!is_qwen_context_length_error("1001", "rate limited"));
+        assert!(!is_qwen_context_length_error("4001", "model not found"));
+    }
+
+    #[tokio::test]
+    async fn recognized_context_length_gets_dedicated_message_without_body() {
+        // FR-010/T-012：可识别模式映射为固定专属文案，正文绝不进入错误。
+        let body = format!(
+            "data: {}\n\n",
+            r#"{"error_code":4010,"error_msg":"The input text is too long, max 3000 tokens"}"#
+        );
+        let chunks = stream::iter(vec![Ok::<_, BackendError>(body.into_bytes())]);
+
+        let error = consume_qwen_sse_chunks(
+            chunks,
+            "test-model",
+            Arc::new(TranslationProgressReporter::discard()),
+            true,
+            Some(Duration::from_secs(1)),
+        )
+        .await
+        .expect_err("context-length error must fail");
+
+        let BackendError::InvalidResponse(message) = error else {
+            panic!("expected InvalidResponse, got {error:?}");
+        };
+        assert_eq!(message, TERMBASE_CONTEXT_LENGTH_MESSAGE);
+        assert!(!message.contains("3000"));
+        assert!(!message.contains("tokens"));
+    }
+
+    #[tokio::test]
+    async fn unrecognized_upstream_error_stays_generic_without_body() {
+        let body = format!(
+            "data: {}\n\n",
+            r#"{"error_code":1001,"error_msg":"rate limited, retry in 30s"}"#
+        );
+        let chunks = stream::iter(vec![Ok::<_, BackendError>(body.into_bytes())]);
+
+        let error = consume_qwen_sse_chunks(
+            chunks,
+            "test-model",
+            Arc::new(TranslationProgressReporter::discard()),
+            true,
+            Some(Duration::from_secs(1)),
+        )
+        .await
+        .expect_err("upstream error must fail");
+
+        let BackendError::InvalidResponse(message) = error else {
+            panic!("expected InvalidResponse, got {error:?}");
+        };
+        assert_eq!(message, "Qwen 上游错误");
+        assert!(!message.contains("30s"));
     }
 
     #[tokio::test]

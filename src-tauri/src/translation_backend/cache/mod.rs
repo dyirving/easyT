@@ -218,7 +218,7 @@ mod tests {
     use super::*;
 
     fn input(text: &str, target: &str) -> NormalizedCacheInput {
-        prepare_cache_input(text, target)
+        prepare_cache_input(text, target, &[0u8; 32])
     }
 
     fn result(text: &str) -> BackendResult {

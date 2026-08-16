@@ -48,21 +48,19 @@ describe("translationHistoryStore", () => {
     });
   });
 
-  it("atomically upserts, replaces and evicts records", () => {
+  it("adds a saved record and evicts over-limit records", () => {
     const first = summary("first", 1);
-    const replaced = summary("replaced", 2);
     const evicted = summary("evicted", 0);
     useTranslationHistoryStore.getState().hydrate({
       state: "ready",
       limit: 5,
-      summaries: [replaced, first, evicted],
+      summaries: [first, evicted],
     });
-    useTranslationHistoryStore.getState().cacheBody(entry(replaced));
     useTranslationHistoryStore.getState().cacheBody(entry(evicted));
     const next = summary("next", 3);
     useTranslationHistoryStore
       .getState()
-      .applySavedCommit(next, "source", "target", "replaced", ["evicted"]);
+      .applySavedCommit(next, "source", "target", ["evicted"]);
     const state = useTranslationHistoryStore.getState();
     expect(state.summaries.map((item) => item.entryId)).toEqual(["next", "first"]);
     expect(Object.keys(state.bodiesById)).toEqual(["next"]);

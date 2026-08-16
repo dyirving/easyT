@@ -138,7 +138,6 @@ impl HistoryDatabase {
     pub fn commit_entry(
         &mut self,
         draft: HistoryEntryDraft,
-        replace_entry_id: Option<String>,
         limit: u8,
         eligibility: &HistoryCommitEligibility,
     ) -> Result<HistoryCommitOutcome, HistoryError> {
@@ -147,9 +146,6 @@ impl HistoryDatabase {
         }
         if !eligibility.may_commit() {
             return Err(HistoryError::Cancelled);
-        }
-        if let Some(id) = replace_entry_id.as_deref() {
-            validate_entry_id(id)?;
         }
         let completed_at = draft.completed_at_utc_ms();
         let total_elapsed = draft.total_elapsed_ms();
@@ -164,23 +160,7 @@ impl HistoryDatabase {
             .connection
             .transaction()
             .map_err(|_| HistoryError::Unavailable)?;
-        if let Some(id) = replace_entry_id.as_deref() {
-            let exists: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM translation_history WHERE entry_id = ?1)",
-                    [id],
-                    |row| row.get(0),
-                )
-                .map_err(|_| HistoryError::Unavailable)?;
-            if !exists {
-                return Err(HistoryError::ReplaceTargetNotFound);
-            }
-        }
         insert_draft(&tx, &draft, total_elapsed, completed_at, logical_size)?;
-        if let Some(id) = replace_entry_id.as_deref() {
-            tx.execute("DELETE FROM translation_history WHERE entry_id = ?1", [id])
-                .map_err(|_| HistoryError::Unavailable)?;
-        }
         let evicted_entry_ids = evict_over_limit(&tx, limit)?;
         if !eligibility.claim_commit() {
             return Err(HistoryError::Cancelled);
@@ -203,7 +183,6 @@ impl HistoryDatabase {
                 total_elapsed_ms: total_elapsed,
                 completed_at_utc_ms: completed_at,
             },
-            replaced_entry_id: replace_entry_id,
             evicted_entry_ids,
         })
     }
@@ -568,7 +547,7 @@ mod tests {
         let dir = TempDir::new("create");
         let mut db = HistoryDatabase::open(&dir.0, 2).expect("open");
         for value in ["a", "b", "c"] {
-            db.commit_entry(draft(value), None, 2, &eligible())
+            db.commit_entry(draft(value), 2, &eligible())
                 .expect("commit");
         }
         let summaries = db.list_summaries().expect("list");
@@ -580,28 +559,11 @@ mod tests {
     }
 
     #[test]
-    fn replacement_is_atomic_and_keeps_count() {
-        let dir = TempDir::new("replace");
-        let mut db = HistoryDatabase::open(&dir.0, 5).expect("open");
-        let first = db
-            .commit_entry(draft("old"), None, 5, &eligible())
-            .expect("first");
-        let id = match first {
-            HistoryCommitOutcome::Saved { summary, .. } => summary.entry_id,
-            _ => panic!("saved"),
-        };
-        db.commit_entry(draft("new"), Some(id.clone()), 5, &eligible())
-            .expect("replace");
-        assert!(matches!(db.get_entry(&id), Err(HistoryError::NotFound)));
-        assert_eq!(db.list_summaries().expect("list").len(), 1);
-    }
-
-    #[test]
-    fn cancelled_commit_keeps_original() {
+    fn cancelled_commit_preserves_existing_records() {
         let dir = TempDir::new("cancel");
         let mut db = HistoryDatabase::open(&dir.0, 5).expect("open");
         let first = db
-            .commit_entry(draft("old"), None, 5, &eligible())
+            .commit_entry(draft("old"), 5, &eligible())
             .expect("first");
         let id = match first {
             HistoryCommitOutcome::Saved { summary, .. } => summary.entry_id,
@@ -610,7 +572,7 @@ mod tests {
         let eligibility = eligible();
         eligibility.cancel();
         assert!(matches!(
-            db.commit_entry(draft("new"), Some(id.clone()), 5, &eligibility),
+            db.commit_entry(draft("new"), 5, &eligibility),
             Err(HistoryError::Cancelled)
         ));
         assert!(db.get_entry(&id).is_ok());
@@ -620,7 +582,7 @@ mod tests {
     fn clear_commits_all_records() {
         let dir = TempDir::new("clear");
         let mut db = HistoryDatabase::open(&dir.0, 5).expect("open");
-        db.commit_entry(draft("a"), None, 5, &eligible())
+        db.commit_entry(draft("a"), 5, &eligible())
             .expect("commit");
         assert_eq!(db.clear_all().expect("clear").cleared_count, 1);
         assert!(db.list_summaries().expect("list").is_empty());
@@ -639,7 +601,7 @@ mod tests {
         exact.original_text = "a".repeat((MAX_HISTORY_ENTRY_BYTES - fixed) as usize);
         assert_eq!(exact.logical_size_bytes(), MAX_HISTORY_ENTRY_BYTES);
         assert!(matches!(
-            db.commit_entry(exact, None, 5, &eligible())
+            db.commit_entry(exact, 5, &eligible())
                 .expect("exact commit"),
             HistoryCommitOutcome::Saved { .. }
         ));
@@ -652,7 +614,7 @@ mod tests {
         let fixed = oversized.logical_size_bytes();
         oversized.original_text = "a".repeat((MAX_HISTORY_ENTRY_BYTES - fixed + 1) as usize);
         assert!(matches!(
-            db.commit_entry(oversized, None, 5, &eligible())
+            db.commit_entry(oversized, 5, &eligible())
                 .expect("oversize outcome"),
             HistoryCommitOutcome::NotSaved { .. }
         ));
@@ -684,7 +646,7 @@ mod tests {
                 .filter_map(Result::ok)
                 .any(|entry| entry.file_name().to_string_lossy().starts_with(prefix)));
         }
-        db.commit_entry(draft("after recovery"), None, 5, &eligible())
+        db.commit_entry(draft("after recovery"), 5, &eligible())
             .expect("new database is writable");
     }
 
@@ -693,10 +655,10 @@ mod tests {
         let dir = TempDir::new("limit-retry");
         let mut db = HistoryDatabase::open(&dir.0, 5).expect("open");
         for value in ["a", "b", "c"] {
-            db.commit_entry(draft(value), None, 5, &eligible())
+            db.commit_entry(draft(value), 5, &eligible())
                 .expect("seed");
         }
-        db.commit_entry(draft("d"), None, 1, &eligible())
+        db.commit_entry(draft("d"), 1, &eligible())
             .expect("commit with latest limit");
         assert_eq!(db.list_summaries().expect("list").len(), 1);
         assert_eq!(db.limit, 1);

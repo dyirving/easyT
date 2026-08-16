@@ -2,15 +2,16 @@
 //!
 //! 纯逻辑模块：不持有状态，不读取配置，不发请求。
 
+use crate::termbase::EffectiveTermbase;
+
 /// Prompt 版本：内容或格式要求变化时必须手动提升，
 /// 使既有缓存键（含 prompt_version）自然失效（《翻译缓存规则》§5.3）。
-pub const PROMPT_VERSION: u32 = 1;
+/// 1 -> 2：共享模板新增条件术语约束块（术语表）。
+pub const PROMPT_VERSION: u32 = 2;
 
-/// 根据目标语言动态拼装系统提示词
-/// 与初始 prompt 文档中第 5 节保持一致
-pub fn build_system_prompt(target_language: &str) -> String {
-    // 默认模板：把第 1 句固定为英文学术翻译，目标语言可替换
-    format!(
+/// 根据目标语言动态拼装系统提示词，并在有效术语集非空时追加术语约束块。
+pub fn build_system_prompt(target_language: &str, termbase: &EffectiveTermbase) -> String {
+    let base = format!(
         r#"你是一名严谨的英文学术文献翻译助手。
 
 请将用户提供的英文内容翻译为{target_language}。
@@ -30,7 +31,13 @@ pub fn build_system_prompt(target_language: &str) -> String {
 12. 不解释翻译过程。
 13. 只输出译文。"#,
         target_language = target_language
-    )
+    );
+    let block = termbase.prompt_block();
+    if termbase.is_empty() {
+        base
+    } else {
+        format!("{base}\n\n{block}")
+    }
 }
 
 #[cfg(test)]
@@ -39,7 +46,7 @@ mod tests {
 
     #[test]
     fn prompt_guides_short_technical_phrases() {
-        let prompt = build_system_prompt("简体中文");
+        let prompt = build_system_prompt("简体中文", &EffectiveTermbase::empty());
 
         assert!(prompt.contains("Python requests 库"));
         assert!(prompt.contains("短语"));
@@ -48,7 +55,7 @@ mod tests {
 
     #[test]
     fn prompt_requires_markdown_math_output() {
-        let prompt = build_system_prompt("简体中文");
+        let prompt = build_system_prompt("简体中文", &EffectiveTermbase::empty());
 
         assert!(prompt.contains("行内公式使用 `$...$`"));
         assert!(prompt.contains("独立公式使用 `$$...$$`"));
@@ -56,5 +63,36 @@ mod tests {
         assert!(prompt.contains("KaTeX"));
         assert!(prompt.contains("包含 `\\tag{n}` 的编号公式必须使用 `$$...$$`"));
         assert!(prompt.contains("不要输出 `\\$X\\^2\\$`"));
+    }
+
+    #[test]
+    fn empty_termbase_keeps_prompt_unchanged() {
+        let empty = build_system_prompt("简体中文", &EffectiveTermbase::empty());
+        assert!(!empty.contains("以下是翻译约束"));
+        assert!(!empty.contains("=>"));
+        assert!(empty.ends_with("只输出译文。"));
+    }
+
+    #[test]
+    fn non_empty_termbase_appends_compact_block() {
+        let entry = crate::termbase::matcher::resolve(
+            "neural network",
+            "简体中文",
+            true,
+            &[crate::termbase::model::TermEntry {
+                id: "t-1".to_string(),
+                source_term: "neural network".to_string(),
+                target_language: "简体中文".to_string(),
+                target_term: "神经网络".to_string(),
+                enabled: true,
+                case_sensitive: false,
+                created_at_utc_ms: 0,
+                updated_at_utc_ms: 0,
+            }],
+        );
+        let prompt = build_system_prompt("简体中文", &entry);
+        assert!(prompt.contains("以下是翻译约束；仅在原文术语匹配且语义适用时优先采用右侧译法："));
+        assert!(prompt.contains("neural network => 神经网络"));
+        assert!(prompt.ends_with("neural network => 神经网络"), "术语块追加在末尾");
     }
 }

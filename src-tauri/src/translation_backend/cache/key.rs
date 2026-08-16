@@ -9,7 +9,8 @@ use crate::translation_backend::prompt::PROMPT_VERSION;
 use super::entry::backend_storage_label;
 
 /// 键编码方案版本：编码、规范化或输出参数集合变化时手动提升。
-pub const CACHE_KEY_VERSION: u32 = 1;
+/// 1 -> 2：输出参数预留字段替换为 32 字节有效术语集指纹（术语表）。
+pub const CACHE_KEY_VERSION: u32 = 2;
 
 /// 单条逻辑字节上限；恰好 1 MiB 可缓存，大于则跳过缓存但照常翻译。
 pub const MAX_ENTRY_LOGICAL_BYTES: u64 = 1024 * 1024;
@@ -61,7 +62,13 @@ pub struct NormalizedCacheInput {
 }
 
 /// 规范化 → 键与逻辑大小信息的单次入口。
-pub fn prepare_cache_input(text: &str, target_language: &str) -> NormalizedCacheInput {
+/// `termbase_fingerprint` 是本次请求有效术语集的确定性 BLAKE3 摘要；
+/// 空术语集使用全零指纹（与无术语表时一致）。
+pub fn prepare_cache_input(
+    text: &str,
+    target_language: &str,
+    termbase_fingerprint: &[u8; 32],
+) -> NormalizedCacheInput {
     let normalized = normalize(text);
     // 短文本判定基于规范化后原文（§8：不含 LF 且 ≤256 字节），与键共享同一份规范化结果。
     let is_short_text = !normalized.contains(&b'\n') && normalized.len() <= SHORT_TEXT_MAX_BYTES;
@@ -73,8 +80,8 @@ pub fn prepare_cache_input(text: &str, target_language: &str) -> NormalizedCache
     encoder.write_u32(PROMPT_VERSION);
     encoder.write_bytes(&normalized);
     encoder.write_bytes(target.as_bytes());
-    // 当前没有输出影响参数；恒为 0，保留字段位置，加入参数时提升 CACHE_KEY_VERSION。
-    encoder.write_u32(0);
+    // 输出影响参数：有效术语集指纹（长度前缀 + 32 字节原始摘要）。
+    encoder.write_bytes(termbase_fingerprint);
 
     NormalizedCacheInput {
         key: CacheKey::from_hash(&blake3::hash(&encoder.finish())),
@@ -180,9 +187,16 @@ mod tests {
     use super::*;
     use crate::translation_backend::models::BackendMode;
 
+    const ZERO_FINGERPRINT: [u8; 32] = [0u8; 32];
+
+    /// 空术语集（全零指纹）是测试默认；按指纹分区断言单独覆盖。
+    fn prepare(text: &str, target: &str) -> NormalizedCacheInput {
+        prepare_cache_input(text, target, &ZERO_FINGERPRINT)
+    }
+
     /// 把输入实参按固定流水线转成十六进制键，测试断言用。
     fn key_hex(text: &str, target: &str) -> String {
-        let input = prepare_cache_input(text, target);
+        let input = prepare(text, target);
         input
             .key
             .as_bytes()
@@ -258,36 +272,36 @@ mod tests {
         assert_eq!(key_hex("hello", " 简体中文 "), key_hex("hello", "简体中文"));
     }
 
-    #[test]
-    fn cache_key_and_prompt_versions_are_one() {
-        assert_eq!(CACHE_KEY_VERSION, 1);
-        assert_eq!(PROMPT_VERSION, 1);
+#[test]
+    fn cache_key_and_prompt_versions_are_two() {
+        assert_eq!(CACHE_KEY_VERSION, 2);
+        assert_eq!(PROMPT_VERSION, 2);
     }
 
     #[test]
     fn short_text_classification_bounds() {
-        assert!(prepare_cache_input("", "en").is_short_text);
-        assert!(prepare_cache_input(&"x".repeat(256), "en").is_short_text);
-        assert!(!prepare_cache_input(&"x".repeat(257), "en").is_short_text);
-        assert!(!prepare_cache_input("a\nb", "en").is_short_text);
+        assert!(prepare("", "en").is_short_text);
+        assert!(prepare(&"x".repeat(256), "en").is_short_text);
+        assert!(!prepare(&"x".repeat(257), "en").is_short_text);
+        assert!(!prepare("a\nb", "en").is_short_text);
         // CR 归一后含 LF → 长文本
-        assert!(!prepare_cache_input("a\rb", "en").is_short_text);
+        assert!(!prepare("a\rb", "en").is_short_text);
         // 多字节 UTF-8 按字节数计
-        assert!(prepare_cache_input(&"你".repeat(85), "en").is_short_text); // 255 字节
-        assert!(!prepare_cache_input(&"你".repeat(86), "en").is_short_text); // 258 字节
+        assert!(prepare(&"你".repeat(85), "en").is_short_text); // 255 字节
+        assert!(!prepare(&"你".repeat(86), "en").is_short_text); // 258 字节
     }
 
     #[test]
     fn normalized_source_bytes_reflect_normalization() {
-        let input = prepare_cache_input("  hello  ", "en");
+        let input = prepare("  hello  ", "en");
         assert_eq!(input.normalized_source_bytes, b"hello".len());
-        let crlf = prepare_cache_input("a\r\nb", "en");
+        let crlf = prepare("a\r\nb", "en");
         assert_eq!(crlf.normalized_source_bytes, 3, "归一为 LF 后的字节数");
     }
 
     #[test]
     fn logical_size_follows_formula() {
-        let input = prepare_cache_input("text", "en");
+        let input = prepare("text", "en");
         let result = BackendResult {
             translated_text: "译文".to_string(),
             source: crate::translation_backend::models::BackendSource {
@@ -306,10 +320,10 @@ mod tests {
     #[test]
     fn definitely_oversized_input_is_known_before_lookup() {
         let safe_len = MAX_ENTRY_LOGICAL_BYTES as usize - 32 - 2 - 256;
-        let exact_lower_bound = prepare_cache_input(&"x".repeat(safe_len), "en");
+        let exact_lower_bound = prepare(&"x".repeat(safe_len), "en");
         assert!(!is_definitely_oversized(&exact_lower_bound));
 
-        let oversized = prepare_cache_input(&"x".repeat(safe_len + 1), "en");
+        let oversized = prepare(&"x".repeat(safe_len + 1), "en");
         assert!(is_definitely_oversized(&oversized));
     }
 
@@ -322,8 +336,9 @@ mod tests {
         );
     }
 
-    /// 固定向量：由 blake3 1.8.6 生成，编码规则/版本变化时必须同步更新
-    /// 并手动提升 CACHE_KEY_VERSION。
+/// 固定向量：由 blake3 1.8.6 生成，编码规则/版本变化时必须同步更新
+    /// 并手动提升 CACHE_KEY_VERSION。默认使用空术语集（全零指纹），
+    /// 即"无术语表"缓存键的确定性快照。
     #[test]
     fn fixed_key_vectors_are_stable_snapshots() {
         let single = key_hex("Hello World!", "简体中文");
@@ -335,12 +350,24 @@ mod tests {
         // 并手动提升 CACHE_KEY_VERSION。
         assert_eq!(
             single,
-            "6f7832409d4d82c35f2fe78eb5bb3237bfc206839511f88f708b5c4f526259be"
+            "e96f9027b3654b78ddf8dce5ccd5999fedfd391ba97b39cb3d08cac5c5ec8e02"
         );
         assert_eq!(
             multi,
-            "eafd922fcb6daea47fba7f900e5f90a0f6999625b4d9f548af32e67e2df694a3"
+            "468bed25e156455144c6bf0b4303f161e521bf650d51aa0d76c9a0a04bfad15d"
         );
         assert_ne!(single, multi);
     }
+
+    #[test]
+    fn termbase_fingerprint_participates_in_key() {
+        let zero = prepare_cache_input("Hello World!", "简体中文", &ZERO_FINGERPRINT);
+        let mut fp1 = ZERO_FINGERPRINT;
+        fp1[0] = 1;
+        let with_termbase = prepare_cache_input("Hello World!", "简体中文", &fp1);
+        assert_ne!(zero.key, with_termbase.key, "不同有效术语集不命中同一缓存");
+        let fp1_again = prepare_cache_input("Hello World!", "简体中文", &fp1);
+        assert_eq!(with_termbase.key, fp1_again.key, "同一指纹确定性一致");
+    }
 }
+

@@ -7,8 +7,10 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use crate::config::AppConfig;
+use crate::termbase::EffectiveTermbase;
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{BackendRequest, BackendResult};
+use crate::translation_backend::prompt::build_system_prompt;
 use crate::translation_backend::web_gateway::credential_store;
 use crate::translation_backend::{connection_success_message, TranslationProgressReporter};
 
@@ -560,6 +562,7 @@ impl QwenAccountPool {
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
+            prompt: build_system_prompt(&config.target_language, &EffectiveTermbase::empty()),
         };
         let deadline =
             tokio::time::Instant::now() + Duration::from_secs(config.timeout_seconds.clamp(5, 300));
@@ -610,6 +613,7 @@ impl QwenAccountPool {
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
+            prompt: build_system_prompt(&config.target_language, &EffectiveTermbase::empty()),
         };
         let deadline =
             tokio::time::Instant::now() + Duration::from_secs(config.timeout_seconds.clamp(5, 300));
@@ -887,6 +891,7 @@ impl QwenAccountPool {
         let request = BackendRequest {
             text: "hi".to_string(),
             target_language: config.target_language.clone(),
+            prompt: build_system_prompt(&config.target_language, &EffectiveTermbase::empty()),
         };
         let result = self
             .execute_with_lease(
@@ -1554,6 +1559,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::discard()),
             )
@@ -1617,6 +1623,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::new(progress_sink)),
             )
@@ -1695,6 +1702,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::new(Arc::new(
                     CancellingProgress,
@@ -1740,6 +1748,7 @@ mod tests {
                     BackendRequest {
                         text: "formal text".to_string(),
                         target_language: "简体中文".to_string(),
+                        prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                     },
                     Arc::new(TranslationProgressReporter::discard()),
                 )
@@ -1799,6 +1808,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::discard()),
             )
@@ -1846,6 +1856,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::discard()),
             )
@@ -1900,6 +1911,7 @@ mod tests {
                 BackendRequest {
                     text: "formal text".to_string(),
                     target_language: "简体中文".to_string(),
+                    prompt: build_system_prompt("简体中文", &EffectiveTermbase::empty()),
                 },
                 Arc::new(TranslationProgressReporter::discard()),
             )

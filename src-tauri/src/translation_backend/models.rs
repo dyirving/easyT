@@ -33,12 +33,15 @@ pub enum WebProviderKind {
 }
 
 /// 翻译后端统一请求
-/// 由 commands 层从 AppConfig + 用户输入构造，不暴露 API Key 或凭证
+/// 由 commands 层从 AppConfig + 用户输入构造，不暴露 API Key 或凭证。
+/// `prompt` 是已构造完成的完整系统提示词（含有效术语约束块）；
+/// `TranslationBackend::translate` 在缓存前解析有效术语集并填充，Adapter 直接使用。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendRequest {
     pub text: String,
     pub target_language: String,
+    pub prompt: String,
 }
 
 /// 翻译后端统一结果

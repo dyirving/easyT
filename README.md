@@ -2,7 +2,7 @@
 
 easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览器、PDF 阅读器、Word 等应用中选中文本，通过全局快捷键获取选区并调用大模型翻译，结果会显示在鼠标附近的置顶窗口中。
 
-当前版本为 **2.3.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
+当前版本为 **2.4.0**，基于 Tauri 2、React 18、TypeScript 和 Rust 构建，提供两种翻译后端：
 
 - **Official API**：调用 OpenAI-compatible Chat Completions API，支持多个内置供应商及自定义接口。
 - **Qwen 网页实验模式**：登录 Qwen 网页账号后，使用网页登录态调用 Qwen 私有接口，无需填写 API Key。
@@ -48,7 +48,7 @@ easyT 是一款轻量级 Windows 桌面划词翻译工具。用户可在浏览�
 
 ## 安装
 
-从项目 [Releases](../../releases) 下载 2.3.0 或更新版本：
+从项目 [Releases](../../releases) 下载 2.4.0 或更新版本：
 
 - `easyT_{version}_x64-setup.exe`：NSIS 安装程序（**推荐**）
 - `easyT_{version}_x64_en-US.msi`：MSI 安装包
@@ -243,9 +243,9 @@ src-tauri/target/release/
 ├── easyt.exe
 └── bundle/
     ├── msi/
-    │   └── easyT_2.3.0_x64_en-US.msi
+    │   └── easyT_2.4.0_x64_en-US.msi
     └── nsis/
-        └── easyT_2.3.0_x64-setup.exe
+        └── easyT_2.4.0_x64-setup.exe
 ```
 
 ## 技术栈

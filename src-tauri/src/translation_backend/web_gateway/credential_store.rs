@@ -22,34 +22,80 @@ pub fn credentials_path(app_data: &Path) -> PathBuf {
         .join("credentials.bin")
 }
 
+pub fn account_credentials_path(account_dir: &Path) -> PathBuf {
+    account_dir.join("credentials.bin")
+}
+
 pub fn qwen_profile_path(app_data: &Path) -> PathBuf {
     app_data.join("web_gateway").join("qwen").join("profile")
 }
 
+pub fn account_profile_path(account_dir: &Path) -> PathBuf {
+    account_dir.join("profile")
+}
+
 /// 将 ticket 直接以 UTF-8 明文写入凭证文件。
 pub fn save_ticket(app_data: &Path, ticket: &str) -> Result<(), BackendError> {
+    save_ticket_at(&credentials_path(app_data), ticket)
+}
+
+pub fn save_ticket_at(path: &Path, ticket: &str) -> Result<(), BackendError> {
     if ticket.is_empty() || ticket.len() > MAX_TICKET_BYTES {
         return Err(BackendError::CredentialCorrupted);
     }
 
-    let path = credentials_path(app_data);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| BackendError::Internal(format!("创建凭证目录失败: {e}")))?;
     }
-    write_atomic(&path, ticket.as_bytes())?;
+    write_atomic(path, ticket.as_bytes())?;
     log::info!("Qwen 明文凭证已保存: bytes={}", ticket.len());
+    Ok(())
+}
+
+/// Writes a replacement ticket beside the active credential without changing it.
+/// The caller can discard this staging file if the accompanying registry update fails.
+pub fn stage_ticket(path: &Path, ticket: &str) -> Result<PathBuf, BackendError> {
+    if ticket.is_empty() || ticket.len() > MAX_TICKET_BYTES {
+        return Err(BackendError::CredentialCorrupted);
+    }
+    let staged = path.with_extension("bin.login.tmp");
+    if let Some(parent) = staged.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| BackendError::Internal(format!("创建凭证目录失败: {e}")))?;
+    }
+    let mut file = fs::File::create(&staged)
+        .map_err(|e| BackendError::Internal(format!("创建凭证临时文件失败: {e}")))?;
+    file.write_all(ticket.as_bytes())
+        .map_err(|e| BackendError::Internal(format!("写入凭证失败: {e}")))?;
+    file.sync_all()
+        .map_err(|e| BackendError::Internal(format!("刷新凭证到磁盘失败: {e}")))?;
+    Ok(staged)
+}
+
+pub fn commit_staged_ticket(staged: &Path, path: &Path) -> Result<(), BackendError> {
+    replace_file(staged, path)
+}
+
+pub fn discard_staged_ticket(staged: &Path) -> Result<(), BackendError> {
+    if staged.exists() {
+        fs::remove_file(staged)
+            .map_err(|e| BackendError::Internal(format!("清理凭证临时文件失败: {e}")))?;
+    }
     Ok(())
 }
 
 pub fn load_ticket(app_data: &Path) -> Result<Option<TicketSecret>, BackendError> {
     let path = credentials_path(app_data);
+    load_ticket_at(&path)
+}
+
+pub fn load_ticket_at(path: &Path) -> Result<Option<TicketSecret>, BackendError> {
     if !path.exists() {
         return Ok(None);
     }
 
-    let bytes =
-        fs::read(&path).map_err(|e| BackendError::Internal(format!("读取凭证失败: {e}")))?;
+    let bytes = fs::read(path).map_err(|e| BackendError::Internal(format!("读取凭证失败: {e}")))?;
     if bytes.is_empty() || bytes.len() > MAX_TICKET_BYTES {
         return Err(BackendError::CredentialCorrupted);
     }
@@ -58,15 +104,27 @@ pub fn load_ticket(app_data: &Path) -> Result<Option<TicketSecret>, BackendError
 }
 
 pub fn delete_ticket(app_data: &Path) -> Result<(), BackendError> {
-    let path = credentials_path(app_data);
+    delete_ticket_at(&credentials_path(app_data))
+}
+
+pub fn delete_ticket_at(path: &Path) -> Result<(), BackendError> {
     if path.exists() {
-        fs::remove_file(&path).map_err(|e| BackendError::Internal(format!("删除凭证失败: {e}")))?;
+        fs::remove_file(path).map_err(|e| BackendError::Internal(format!("删除凭证失败: {e}")))?;
     }
     Ok(())
 }
 
 pub fn delete_qwen_profile(app_data: &Path) -> Result<(), BackendError> {
     let profile = qwen_profile_path(app_data);
+    if profile.exists() {
+        fs::remove_dir_all(&profile)
+            .map_err(|e| BackendError::Internal(format!("删除 Qwen profile 失败: {e}")))?;
+    }
+    Ok(())
+}
+
+pub fn delete_qwen_profile_at(account_dir: &Path) -> Result<(), BackendError> {
+    let profile = account_profile_path(account_dir);
     if profile.exists() {
         fs::remove_dir_all(&profile)
             .map_err(|e| BackendError::Internal(format!("删除 Qwen profile 失败: {e}")))?;

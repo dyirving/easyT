@@ -6,8 +6,9 @@
 pub mod credential_store;
 pub mod qwen;
 
-pub use qwen::QwenSession;
+pub use qwen::{QwenAccountPoolSnapshot, QwenSession};
 
+use std::path::Path;
 use std::sync::Arc;
 
 use crate::config::AppConfig;
@@ -15,7 +16,7 @@ use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{BackendRequest, BackendResult, WebProviderKind};
 use crate::translation_backend::TranslationProgressReporter;
 
-use self::qwen::QwenWebAdapter;
+use self::qwen::{reconcile_legacy_migration, QwenAccountPool, QwenError};
 
 /// WebGateway 入口
 ///
@@ -28,18 +29,38 @@ use self::qwen::QwenWebAdapter;
 /// - 对日志进行敏感信息过滤
 /// - 将 Qwen 错误转换为 BackendError
 pub struct WebGateway {
-    qwen: QwenWebAdapter,
+    legacy_qwen_session: Arc<QwenSession>,
+    qwen_account_pool: Arc<QwenAccountPool>,
 }
 
 impl WebGateway {
-    pub fn new(http_client: reqwest::Client) -> Self {
-        let qwen = QwenWebAdapter::new(http_client);
-        Self { qwen }
+    pub fn open(http_client: reqwest::Client, app_data: &Path) -> Result<Self, QwenError> {
+        let qwen_root = app_data.join("web_gateway").join("qwen");
+        reconcile_legacy_migration(&qwen_root)?;
+        let qwen_account_pool = Arc::new(QwenAccountPool::open(&qwen_root, http_client.clone())?);
+        qwen_account_pool.restore_from_storage()?;
+        // Legacy login commands still operate on the first enabled account until their callers
+        // move to the account-specific commands. Translation itself always uses the pool.
+        let legacy_qwen_session = qwen_account_pool
+            .first_session()
+            .unwrap_or_else(|| Arc::new(QwenSession::new()));
+        Ok(Self {
+            legacy_qwen_session,
+            qwen_account_pool,
+        })
     }
 
     /// 共享 QwenSession 引用（供登录管理命令转发）
     pub fn qwen_session(&self) -> Arc<QwenSession> {
-        self.qwen.session()
+        Arc::clone(&self.legacy_qwen_session)
+    }
+
+    pub fn qwen_account_pool(&self) -> QwenAccountPoolSnapshot {
+        self.qwen_account_pool.snapshot()
+    }
+
+    pub fn qwen_accounts(&self) -> Arc<QwenAccountPool> {
+        Arc::clone(&self.qwen_account_pool)
     }
 
     pub async fn translate(
@@ -49,7 +70,11 @@ impl WebGateway {
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         match config.web_gateway.provider {
-            WebProviderKind::Qwen => self.qwen.translate(config, request, progress).await,
+            WebProviderKind::Qwen => {
+                self.qwen_account_pool
+                    .translate(config, request, progress)
+                    .await
+            }
         }
     }
 
@@ -60,7 +85,11 @@ impl WebGateway {
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<BackendResult, BackendError> {
         match config.web_gateway.provider {
-            WebProviderKind::Qwen => self.qwen.translate_stream(config, request, progress).await,
+            WebProviderKind::Qwen => {
+                self.qwen_account_pool
+                    .translate_stream(config, request, progress)
+                    .await
+            }
         }
     }
 
@@ -70,7 +99,7 @@ impl WebGateway {
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<String, BackendError> {
         match config.web_gateway.provider {
-            WebProviderKind::Qwen => self.qwen.test_connection(config, progress).await,
+            WebProviderKind::Qwen => self.qwen_account_pool.test_global(config, progress).await,
         }
     }
 
@@ -80,7 +109,34 @@ impl WebGateway {
         progress: Arc<TranslationProgressReporter>,
     ) -> Result<String, BackendError> {
         match config.web_gateway.provider {
-            WebProviderKind::Qwen => self.qwen.test_connection_stream(config, progress).await,
+            WebProviderKind::Qwen => self.qwen_account_pool.test_global(config, progress).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::translation_backend::web_gateway::qwen::test_support;
+
+    #[test]
+    fn legacy_account_migrates_before_the_authoritative_snapshot_is_exposed() {
+        let app_data = test_support::TestDir::new("web-gateway-startup");
+        let qwen_root = app_data.path().join("web_gateway").join("qwen");
+        std::fs::create_dir_all(&qwen_root).unwrap();
+        std::fs::write(qwen_root.join("credentials.bin"), "fake-ticket").unwrap();
+
+        let gateway = WebGateway::open(reqwest::Client::new(), app_data.path()).unwrap();
+        let snapshot = gateway.qwen_account_pool();
+
+        assert_eq!(snapshot.accounts.len(), 1);
+        assert_eq!(snapshot.accounts[0].display_name, "默认账号");
+        assert!(gateway
+            .qwen_session()
+            .account_dir()
+            .unwrap()
+            .join("credentials.bin")
+            .exists());
+        assert!(!qwen_root.join("credentials.bin").exists());
     }
 }

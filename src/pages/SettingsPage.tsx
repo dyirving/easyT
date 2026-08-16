@@ -70,10 +70,16 @@ export function SettingsPage({
             <WebGatewayPanel
               config={controller.config}
               setConfig={controller.setConfig}
-              status={controller.loginStatus}
-              pending={controller.loginActionPending}
-              onLogin={() => void controller.beginLogin()}
-              onLogout={() => controller.setLogoutIntent(true)}
+              accountPool={controller.qwenAccountPool}
+              pending={controller.qwenAccountPending}
+              error={controller.qwenAccountError}
+              onCreateAccount={controller.createQwenAccount}
+              onBeginAccountLogin={controller.beginQwenAccountLogin}
+              onRenameAccount={controller.renameQwenAccount}
+              onSetAccountEnabled={controller.setQwenAccountEnabled}
+              onMoveAccount={controller.moveQwenAccount}
+              onTestAccount={controller.testQwenAccount}
+              onRequestDestructiveAction={controller.setAccountDestructiveIntent}
             />
           ) : (
             <OfficialApiPanel
@@ -256,15 +262,17 @@ export function SettingsPage({
         onCacheCleared={onCacheCleared}
       />
       <ConfirmDialog
-        open={controller.logoutIntent}
-        title="确定退出 Qwen 登录？"
-        description="退出后会删除本地保存的登录凭证和 Qwen 浏览器 profile，直到重新登录前翻译不可用。"
-        confirmLabel="退出登录"
+        open={Boolean(controller.accountDestructiveIntent)}
+        title={controller.accountDestructiveIntent?.kind === "delete" ? "确定删除 Qwen 账号？" : "确定退出 Qwen 登录？"}
+        description={controller.accountDestructiveIntent?.kind === "delete"
+          ? `删除“${controller.accountDestructiveIntent.displayName}”会移除该账号的本地凭证、浏览器 profile 和账号槽位。`
+          : `退出“${controller.accountDestructiveIntent?.displayName ?? ""}”后会删除本地凭证和 Qwen 浏览器 profile，账号槽位会保留。`}
+        confirmLabel={controller.accountDestructiveIntent?.kind === "delete" ? "删除账号" : "退出登录"}
         cancelLabel="取消"
         tone="danger"
-        pending={controller.loginActionPending}
-        onCancel={() => controller.setLogoutIntent(false)}
-        onConfirm={() => void controller.logout()}
+        pending={controller.qwenAccountPending}
+        onCancel={() => controller.setAccountDestructiveIntent(null)}
+        onConfirm={() => void controller.confirmAccountDestructiveAction()}
       />
     </div>
   );

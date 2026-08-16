@@ -4,6 +4,7 @@
 use serde::{Serialize, Serializer};
 
 use crate::translation_backend::error::{BackendError, BackendErrorKind};
+use crate::translation_backend::web_gateway::qwen::QwenError;
 
 /// 应用统一错误类型
 /// 对应前端 types/index.ts 中的 ERROR_KIND 常量
@@ -67,6 +68,18 @@ pub enum AppError {
     #[error("当前后端不支持流式输出")]
     BackendStreamingUnsupported,
 
+    #[error("{message}")]
+    QwenStorage {
+        code: &'static str,
+        message: &'static str,
+    },
+
+    #[error("{message}")]
+    Qwen {
+        code: &'static str,
+        message: &'static str,
+    },
+
     #[error("内部错误: {0}")]
     Internal(String),
 }
@@ -77,6 +90,8 @@ pub enum AppError {
 struct ErrorResponse {
     kind: &'static str,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
 }
 
 impl AppError {
@@ -101,6 +116,8 @@ impl AppError {
             AppError::BackendPartialResponse(_) => "BackendPartialResponse",
             AppError::BackendInvalidResponse(_) => "BackendInvalidResponse",
             AppError::BackendStreamingUnsupported => "BackendStreamingUnsupported",
+            AppError::QwenStorage { .. } => "Internal",
+            AppError::Qwen { .. } => "BackendNetwork",
             AppError::Internal(_) => "Internal",
         }
     }
@@ -115,8 +132,22 @@ impl Serialize for AppError {
             kind: self.kind_str(),
             // 不暴露底层堆栈与敏感信息
             message: self.to_string(),
+            code: match self {
+                AppError::QwenStorage { code, .. } => Some(*code),
+                AppError::Qwen { code, .. } => Some(*code),
+                _ => None,
+            },
         };
         resp.serialize(serializer)
+    }
+}
+
+impl From<QwenError> for AppError {
+    fn from(error: QwenError) -> Self {
+        AppError::QwenStorage {
+            code: error.code().as_str(),
+            message: error.safe_message(),
+        }
     }
 }
 
@@ -151,6 +182,20 @@ impl From<BackendError> for AppError {
                 AppError::Internal("当前平台不支持此操作".to_string())
             }
             BackendErrorKind::CredentialCorrupted => AppError::SessionExpired,
+            BackendErrorKind::QwenPool => match err {
+                BackendError::QwenPool(error) => AppError::QwenStorage {
+                    code: error.code().as_str(),
+                    message: error.safe_message(),
+                },
+                _ => AppError::Internal("Qwen 账号池错误映射异常".to_string()),
+            },
+            BackendErrorKind::Qwen => match err {
+                BackendError::Qwen(error) => AppError::Qwen {
+                    code: error.code().as_str(),
+                    message: error.safe_message(),
+                },
+                _ => AppError::Internal("Qwen 上游错误映射异常".to_string()),
+            },
             BackendErrorKind::Internal => AppError::Internal(err.safe_message()),
         }
     }
@@ -194,5 +239,23 @@ mod tests {
         let json = serde_json::to_value(app_err).expect("error should serialize");
 
         assert_eq!(json["kind"], "BackendStreamingUnsupported");
+    }
+
+    #[test]
+    fn qwen_storage_error_serializes_a_redacted_code() {
+        let app_error: AppError = QwenError::storage_read("fake-ticket").into();
+        let json = serde_json::to_value(app_error).expect("error should serialize");
+
+        assert_eq!(json["code"], "QW-STORAGE-004");
+        assert!(!json["message"].as_str().unwrap().contains("fake-ticket"));
+    }
+
+    #[test]
+    fn qwen_upstream_errors_keep_their_stable_code_at_the_ipc_boundary() {
+        let app_error: AppError = BackendError::Qwen(QwenError::upstream_rate_limited()).into();
+        let json = serde_json::to_value(app_error).expect("error should serialize");
+
+        assert_eq!(json["code"], "QW-UPSTREAM-429");
+        assert_eq!(json["message"], "Qwen 请求过于频繁");
     }
 }

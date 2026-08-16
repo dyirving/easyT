@@ -106,6 +106,8 @@ pub struct TranslationCommandError {
     kind: &'static str,
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     total_elapsed_ms: Option<u64>,
 }
 
@@ -114,6 +116,10 @@ impl TranslationCommandError {
         Self {
             kind: error.kind_str(),
             message: error.to_string(),
+            code: match &error {
+                AppError::QwenStorage { code, .. } | AppError::Qwen { code, .. } => Some(*code),
+                _ => None,
+            },
             total_elapsed_ms,
         }
     }

@@ -55,14 +55,18 @@ pub struct TranslationBackend {
 }
 
 impl TranslationBackend {
-    pub fn new(http_client: reqwest::Client, cache: Arc<TranslationCache>) -> Self {
+    pub fn new(
+        http_client: reqwest::Client,
+        cache: Arc<TranslationCache>,
+        app_data: &std::path::Path,
+    ) -> Result<Self, crate::translation_backend::web_gateway::qwen::QwenError> {
         let official_api = OfficialApiAdapter::new(http_client.clone());
-        let web_gateway = Arc::new(WebGateway::new(http_client));
-        Self {
+        let web_gateway = Arc::new(WebGateway::open(http_client, app_data)?);
+        Ok(Self {
             official_api,
             web_gateway,
             cache,
-        }
+        })
     }
 
     /// 共享的 WebGateway 引用（供登录管理命令转发使用）

@@ -28,12 +28,10 @@ use crate::config::AppConfig;
 use crate::translation_backend::error::BackendError;
 use crate::translation_backend::models::{BackendRequest, BackendResult, BackendSource};
 use crate::translation_backend::prompt::build_system_prompt;
-use crate::translation_backend::{
-    connection_success_message, TranslationPhase, TranslationProgressReporter,
-};
+use crate::translation_backend::{TranslationPhase, TranslationProgressReporter};
 
-use super::session::{ensure_qwen_ready, QwenSession};
 use super::sse_decoder::{DecodeOutcome, QwenSseDecoder};
+use super::QwenError;
 use crate::translation_backend::web_gateway::credential_store::TicketSecret;
 
 /// Qwen 登录入口（仅作 settings 页面跳转用）
@@ -54,252 +52,7 @@ pub const LOGIN_WATCHER_INTERVAL: Duration = Duration::from_millis(750);
 /// 登录窗口标签
 pub const QWEN_LOGIN_WINDOW_LABEL: &str = "qwen-login";
 
-/// QwenWebAdapter
-pub struct QwenWebAdapter {
-    http_client: reqwest::Client,
-    session: Arc<QwenSession>,
-}
-
-impl QwenWebAdapter {
-    pub fn new(http_client: reqwest::Client) -> Self {
-        Self {
-            http_client,
-            session: Arc::new(QwenSession::new()),
-        }
-    }
-
-    pub fn session(&self) -> Arc<QwenSession> {
-        Arc::clone(&self.session)
-    }
-
-    pub async fn translate(
-        &self,
-        config: &AppConfig,
-        request: BackendRequest,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendResult, BackendError> {
-        ensure_qwen_ready(&self.session)?;
-
-        let app_data = crate::config::app_data_dir()
-            .map_err(|e| BackendError::Internal(format!("无法定位应用数据目录: {e}")))?;
-
-        // 取出短期使用的 ticket
-        let ticket = self
-            .session
-            .borrow_ticket(&app_data)?
-            .ok_or(BackendError::LoginRequired)?;
-
-        let result = self
-            .translate_with_ticket(config, request, &ticket, progress)
-            .await;
-        // ticket 在此 drop 并显式清理内存副本
-        drop(ticket);
-
-        match result {
-            Ok(r) => Ok(r),
-            Err(BackendError::Unauthorized) => {
-                self.session.mark_expired();
-                Err(BackendError::SessionExpired)
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    pub async fn translate_stream(
-        &self,
-        config: &AppConfig,
-        request: BackendRequest,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendResult, BackendError> {
-        ensure_qwen_ready(&self.session)?;
-
-        let app_data = crate::config::app_data_dir()
-            .map_err(|e| BackendError::Internal(format!("无法定位应用数据目录: {e}")))?;
-        let ticket = self
-            .session
-            .borrow_ticket(&app_data)?
-            .ok_or(BackendError::LoginRequired)?;
-
-        let result = self
-            .translate_stream_with_ticket(config, request, &ticket, progress)
-            .await;
-        drop(ticket);
-
-        match result {
-            Ok(result) => Ok(result),
-            Err(BackendError::Unauthorized) => {
-                self.session.mark_expired();
-                Err(BackendError::SessionExpired)
-            }
-            Err(error) => Err(error),
-        }
-    }
-
-    async fn translate_with_ticket(
-        &self,
-        config: &AppConfig,
-        request: BackendRequest,
-        ticket: &TicketSecret,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendResult, BackendError> {
-        let timeout = config.timeout_seconds.clamp(5, 300);
-        let prepared = prepare_qwen_request(config, &request, ticket)?;
-
-        // 日志只记录非敏感字段
-        log::info!(
-            "Qwen WebGateway 翻译: model={}, target_language={}, text_len={}",
-            prepared.model,
-            request.target_language,
-            request.text.chars().count()
-        );
-
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout);
-        for attempt in 0..=1 {
-            let remaining = deadline
-                .checked_duration_since(tokio::time::Instant::now())
-                .ok_or(BackendError::Timeout)?;
-            progress.phase(TranslationPhase::ConnectingBackend, None);
-            let resp = self
-                .http_client
-                .post(&prepared.url)
-                .headers(prepared.headers.clone())
-                .query(&prepared.params)
-                .timeout(remaining)
-                .json(&prepared.body)
-                .send()
-                .await
-                .map_err(map_request_error)?;
-
-            let status = resp.status();
-            if status.is_success() {
-                progress.phase(TranslationPhase::WaitingForContent, None);
-                return self
-                    .consume_sse_stream(resp, &prepared.model, progress, false, None)
-                    .await;
-            }
-
-            let response_body = resp.text().await.unwrap_or_default();
-            log::warn!(
-                "Qwen 上游非 2xx: code={}, body_len={}, attempt={}",
-                status.as_u16(),
-                response_body.len(),
-                attempt + 1
-            );
-            if attempt == 0 && is_retryable_status(status) {
-                let remaining = deadline
-                    .checked_duration_since(tokio::time::Instant::now())
-                    .ok_or(BackendError::Timeout)?;
-                let backoff = Duration::from_millis(250).min(remaining);
-                tokio::time::sleep(backoff).await;
-                continue;
-            }
-            return Err(map_status_to_error(status));
-        }
-        Err(BackendError::Internal("Qwen 重试状态异常".to_string()))
-    }
-
-    async fn translate_stream_with_ticket(
-        &self,
-        config: &AppConfig,
-        request: BackendRequest,
-        ticket: &TicketSecret,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<BackendResult, BackendError> {
-        let timeout = Duration::from_secs(config.timeout_seconds.clamp(5, 300));
-        let prepared = prepare_qwen_request(config, &request, ticket)?;
-
-        log::info!(
-            "Qwen WebGateway 流式翻译: model={}, target_language={}, text_len={}",
-            prepared.model,
-            request.target_language,
-            request.text.chars().count()
-        );
-
-        progress.phase(TranslationPhase::ConnectingBackend, None);
-        let response = tokio::time::timeout(
-            timeout,
-            self.http_client
-                .post(&prepared.url)
-                .headers(prepared.headers)
-                .query(&prepared.params)
-                .json(&prepared.body)
-                .send(),
-        )
-        .await
-        .map_err(|_| BackendError::Timeout)?
-        .map_err(map_request_error)?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = tokio::time::timeout(timeout, response.text())
-                .await
-                .ok()
-                .and_then(Result::ok)
-                .unwrap_or_default();
-            log::warn!(
-                "Qwen 流式上游非 2xx: code={}, body_len={}",
-                status.as_u16(),
-                response_body.len()
-            );
-            return Err(map_status_to_error(status));
-        }
-
-        progress.phase(TranslationPhase::WaitingForContent, None);
-
-        self.consume_sse_stream(response, &prepared.model, progress, true, Some(timeout))
-            .await
-    }
-
-    async fn consume_sse_stream(
-        &self,
-        resp: reqwest::Response,
-        model: &str,
-        progress: Arc<TranslationProgressReporter>,
-        emit_content: bool,
-        idle_timeout: Option<Duration>,
-    ) -> Result<BackendResult, BackendError> {
-        use futures_util::StreamExt;
-
-        let stream = resp
-            .bytes_stream()
-            .map(|chunk| chunk.map_err(map_stream_error));
-        consume_qwen_sse_chunks(stream, model, progress, emit_content, idle_timeout).await
-    }
-
-    pub async fn test_connection(
-        &self,
-        config: &AppConfig,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<String, BackendError> {
-        ensure_qwen_ready(&self.session)?;
-
-        let request = BackendRequest {
-            text: "hi".to_string(),
-            target_language: config.target_language.clone(),
-        };
-        let result = self.translate(config, request, progress).await?;
-        Ok(connection_success_message("连接成功", &result))
-    }
-
-    pub async fn test_connection_stream(
-        &self,
-        config: &AppConfig,
-        progress: Arc<TranslationProgressReporter>,
-    ) -> Result<String, BackendError> {
-        ensure_qwen_ready(&self.session)?;
-        let request = BackendRequest {
-            text: "hi".to_string(),
-            target_language: config.target_language.clone(),
-        };
-        let result = self.translate_stream(config, request, progress).await?;
-        Ok(connection_success_message(
-            "流式连接成功",
-            &result,
-        ))
-    }
-}
-
-async fn consume_qwen_sse_chunks<S, B>(
+pub(crate) async fn consume_qwen_sse_chunks<S, B>(
     stream: S,
     model: &str,
     progress: Arc<TranslationProgressReporter>,
@@ -383,18 +136,19 @@ where
     })
 }
 
-struct PreparedQwenRequest {
-    model: String,
-    url: String,
-    headers: HeaderMap,
-    params: Vec<(&'static str, String)>,
-    body: QwenRequestBody,
+pub(crate) struct PreparedQwenRequest {
+    pub(crate) model: String,
+    pub(crate) url: String,
+    pub(crate) headers: HeaderMap,
+    pub(crate) params: Vec<(&'static str, String)>,
+    pub(crate) body: QwenRequestBody,
 }
 
-fn prepare_qwen_request(
+pub(crate) fn prepare_qwen_request(
     config: &AppConfig,
     request: &BackendRequest,
     ticket: &TicketSecret,
+    save_history: bool,
 ) -> Result<PreparedQwenRequest, BackendError> {
     let model = config.web_gateway.model.clone();
     let session_id = Uuid::new_v4().simple().to_string();
@@ -408,7 +162,7 @@ fn prepare_qwen_request(
             &request.target_language,
             &session_id,
             &req_id,
-            config.web_gateway.save_history,
+            save_history,
         ),
         model,
         url: format!("{}/api/v2/chat", QWEN_API_BASE),
@@ -420,7 +174,7 @@ fn prepare_qwen_request(
 // ===== Qwen 私有协议字段 =====
 
 #[derive(Debug, Serialize)]
-struct QwenRequestBody {
+pub(crate) struct QwenRequestBody {
     deep_search: &'static str,
     req_id: String,
     model: String,
@@ -548,36 +302,33 @@ fn build_qwen_query_params(device_id: &str) -> Vec<(&'static str, String)> {
     ]
 }
 
-fn is_retryable_status(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
-}
-
 // ===== 错误映射 =====
 
-fn map_request_error(err: reqwest::Error) -> BackendError {
+pub(crate) fn map_request_error(err: reqwest::Error) -> BackendError {
     if err.is_timeout() {
-        BackendError::Timeout
+        BackendError::Qwen(QwenError::timeout())
     } else if let Some(status) = err.status() {
         map_status_to_error(status)
     } else {
-        BackendError::Network("网络请求失败".to_string())
+        BackendError::Qwen(QwenError::network())
     }
 }
 
-fn map_stream_error(err: reqwest::Error) -> BackendError {
+pub(crate) fn map_stream_error(err: reqwest::Error) -> BackendError {
     if err.is_timeout() {
-        BackendError::Timeout
+        BackendError::Qwen(QwenError::timeout())
     } else {
-        BackendError::Network("流读取失败".to_string())
+        BackendError::Qwen(QwenError::network())
     }
 }
 
-fn map_status_to_error(status: reqwest::StatusCode) -> BackendError {
+pub(crate) fn map_status_to_error(status: reqwest::StatusCode) -> BackendError {
     match status.as_u16() {
-        401 | 403 => BackendError::Unauthorized,
-        429 => BackendError::RateLimited,
-        500..=599 => BackendError::Network(format!("服务器错误 ({})", status.as_u16())),
-        _ => BackendError::Network(format!("HTTP {}", status.as_u16())),
+        401 => BackendError::Qwen(QwenError::auth_401()),
+        403 => BackendError::Qwen(QwenError::auth_403()),
+        429 => BackendError::Qwen(QwenError::upstream_rate_limited()),
+        500..=599 => BackendError::Qwen(QwenError::upstream_server_error(status.as_u16())),
+        _ => BackendError::Qwen(QwenError::upstream_other()),
     }
 }
 
@@ -633,16 +384,6 @@ mod tests {
             serde_json::to_string(reasoning).expect("reasoning JSON")
         )
         .into_bytes()
-    }
-
-    #[test]
-    fn retry_is_limited_to_rate_limit_and_server_errors() {
-        assert!(is_retryable_status(reqwest::StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retryable_status(
-            reqwest::StatusCode::SERVICE_UNAVAILABLE
-        ));
-        assert!(!is_retryable_status(reqwest::StatusCode::UNAUTHORIZED));
-        assert!(!is_retryable_status(reqwest::StatusCode::BAD_REQUEST));
     }
 
     #[test]

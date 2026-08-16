@@ -169,8 +169,9 @@ export function useTranslationController() {
   const friendlyError =
     translation.status === "error"
       ? toFriendlyError({
-          kind: translation.errorKind ?? "Internal",
-          message: translation.errorMessage ?? "",
+           kind: translation.errorKind ?? "Internal",
+           message: translation.errorMessage ?? "",
+           code: translation.errorCode ?? undefined,
         })
       : null;
 

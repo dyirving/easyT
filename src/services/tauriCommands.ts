@@ -11,6 +11,7 @@ import {
   type SaveConfigResult,
   type TranslationHistoryEntry,
   type QwenSessionStatus,
+  type QwenAccountPoolSnapshot,
   type TranslationPhase,
   type TranslationProgressBackend,
   type WebProviderKind,
@@ -21,6 +22,7 @@ import {
 export interface CommandError {
   kind: ErrorKind;
   message: string;
+  code?: string;
   totalElapsedMs?: number;
 }
 
@@ -141,12 +143,10 @@ export async function testApiConnection(
     const message = await invoke<string>("test_api_connection", { config });
     return { ok: true, message };
   } catch (e) {
+    const error = toCommandError(e);
     return {
       ok: false,
-      message:
-        e instanceof Object && "message" in e
-          ? String((e as { message: string }).message)
-          : "连接失败",
+      message: formatCommandError(error),
     };
   }
 }
@@ -172,6 +172,54 @@ export async function getWebLoginStatus(
   provider: WebProviderKind,
 ): Promise<QwenSessionStatus> {
   return invoke<QwenSessionStatus>("get_web_login_status", { provider });
+}
+
+export async function getQwenAccountPool(): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("get_qwen_account_pool");
+}
+
+export async function createQwenAccount(displayName: string): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("create_qwen_account", { displayName });
+}
+
+export async function beginQwenAccountLogin(accountId: string): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("begin_qwen_account_login", { accountId });
+}
+
+export async function renameQwenAccount(
+  accountId: string,
+  displayName: string,
+): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("rename_qwen_account", { accountId, displayName });
+}
+
+export async function setQwenAccountEnabled(
+  accountId: string,
+  enabled: boolean,
+): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("set_qwen_account_enabled", { accountId, enabled });
+}
+
+export async function moveQwenAccount(
+  accountId: string,
+  direction: "up" | "down",
+): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("move_qwen_account", { accountId, direction });
+}
+
+export async function logoutQwenAccount(accountId: string): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("logout_qwen_account", { accountId });
+}
+
+export async function deleteQwenAccount(accountId: string): Promise<QwenAccountPoolSnapshot> {
+  return invoke<QwenAccountPoolSnapshot>("delete_qwen_account", { accountId });
+}
+
+export async function testQwenAccount(
+  accountId: string,
+  config: AppConfig,
+): Promise<string> {
+  return invoke<string>("test_qwen_account", { accountId, config });
 }
 
 /**
@@ -204,6 +252,10 @@ export function toCommandError(e: unknown): CommandError {
   if (e && typeof e === "object" && "kind" in e && "message" in e) {
     const kind = (e as { kind: string }).kind as ErrorKind;
     const message = (e as { message: string }).message;
+    const rawCode = (e as { code?: unknown }).code;
+    const code = typeof rawCode === "string"
+      ? rawCode
+      : undefined;
     const rawElapsed = (e as { totalElapsedMs?: unknown }).totalElapsedMs;
     const totalElapsedMs =
       typeof rawElapsed === "number" &&
@@ -211,7 +263,7 @@ export function toCommandError(e: unknown): CommandError {
       rawElapsed >= 0
         ? rawElapsed
         : undefined;
-    return { kind, message, totalElapsedMs };
+    return { kind, message, code, totalElapsedMs };
   }
   return {
     kind: ERROR_KIND.Internal,
@@ -233,117 +285,127 @@ export interface FriendlyError {
   friendlyMessage: string;
   hint?: string;
   retryable: boolean;
+  code?: string;
+}
+
+export function formatCommandError(err: Pick<CommandError, "message" | "code">): string {
+  return err.code ? `${err.message} [${err.code}]` : err.message;
 }
 
 export function toFriendlyError(err: CommandError): FriendlyError {
+  const withCode = (friendly: Omit<FriendlyError, "code">): FriendlyError => ({
+    ...friendly,
+    friendlyMessage: err.code ? err.message : friendly.friendlyMessage,
+    code: err.code,
+  });
   switch (err.kind) {
     case ERROR_KIND.NoSelectedText:
-      return {
+      return withCode({
         friendlyMessage: "未检测到选中文本",
         hint: "请在其他应用中选中英文文本后再按快捷键",
         retryable: false,
-      };
+      });
     case ERROR_KIND.TextTooLong:
-      return {
+      return withCode({
         friendlyMessage: err.message || "文本过长",
         hint: "可在设置中调大最大翻译字符数",
         retryable: false,
-      };
+      });
     case ERROR_KIND.ClipboardError:
-      return {
+      return withCode({
         friendlyMessage: err.message || "剪贴板操作失败",
         hint: "可能被其他应用占用，请稍后重试",
         retryable: true,
-      };
+      });
     case ERROR_KIND.ApiUnauthorized:
-      return {
+      return withCode({
         friendlyMessage: "API Key 无效或未配置 (401)",
         hint: "请到设置页检查 API Key 与 Base URL",
         retryable: false,
-      };
+      });
     case ERROR_KIND.ApiRateLimited:
-      return {
+      return withCode({
         friendlyMessage: "请求过于频繁 (429)",
         hint: "请稍后再试，或检查账户额度",
         retryable: true,
-      };
+      });
     case ERROR_KIND.ApiTimeout:
-      return {
+      return withCode({
         friendlyMessage: "请求超时",
         hint: "请检查网络，或在设置中增大超时时间",
         retryable: true,
-      };
+      });
     case ERROR_KIND.LoginRequired:
-      return {
+      return withCode({
         friendlyMessage: "请先在设置中登录 Qwen",
         hint: "WebGateway 模式需要登录 Qwen 账号才能翻译",
         retryable: false,
-      };
+      });
     case ERROR_KIND.SessionExpired:
-      return {
+      return withCode({
         friendlyMessage: "Qwen 登录状态已过期",
         hint: "请到设置页重新登录 Qwen",
         retryable: false,
-      };
+      });
     case ERROR_KIND.BackendCancelled:
-      return {
+      return withCode({
         friendlyMessage: err.message || "翻译请求已被新请求取代",
         hint: "连续触发翻译时旧请求会被取消，属于正常行为",
         retryable: false,
-      };
+      });
     case ERROR_KIND.BackendNetwork:
-      return {
+      return withCode({
         friendlyMessage: "网络请求失败",
         hint: "请检查网络连接，或稍后重试",
         retryable: true,
-      };
+      });
     case ERROR_KIND.BackendProtocolMismatch:
-      return {
+      return withCode({
         friendlyMessage: "Qwen 网页协议已变化",
         hint: "请切换 Official API 或更新 easyT",
         retryable: false,
-      };
+      });
     case ERROR_KIND.BackendPartialResponse:
-      return {
+      return withCode({
         friendlyMessage: "上游响应不完整",
         hint: "翻译过程被中断，请重试",
         retryable: true,
-      };
+      });
     case ERROR_KIND.BackendInvalidResponse:
-      return {
+      return withCode({
         friendlyMessage: "响应格式无效",
         hint: "Qwen 返回内容无法解析，请重试或切换 Official API",
         retryable: true,
-      };
+      });
     case ERROR_KIND.BackendStreamingUnsupported:
-      return {
+      return withCode({
         friendlyMessage: "当前后端不支持流式输出",
         hint: "请在设置中关闭“流式输出”后重试",
         retryable: false,
-      };
+      });
     case ERROR_KIND.ConfigInvalid:
-      return {
+      return withCode({
         friendlyMessage: err.message || "配置无效",
         hint: "请到设置页修正配置后保存",
         retryable: false,
-      };
+      });
     case ERROR_KIND.ShortcutRegistrationFailed:
-      return {
+      return withCode({
         friendlyMessage: err.message || "快捷键注册失败",
         hint: "可能被其他应用占用，请尝试更换组合键",
         retryable: false,
-      };
+      });
     case ERROR_KIND.WindowError:
-      return {
+      return withCode({
         friendlyMessage: err.message || "窗口操作失败",
         retryable: false,
-      };
+      });
     case ERROR_KIND.HistoryOperationFailed:
-      return {
+      return withCode({
         friendlyMessage: err.message || "翻译历史操作失败",
         hint: "翻译仍可继续，请稍后重试历史操作",
         retryable: true,
-      };
+      });
     case ERROR_KIND.Internal:
     default:
       return {

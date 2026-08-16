@@ -11,6 +11,7 @@
 //! - 前端不能传 Cookie、ticket、Base URL 或 Header
 //! - logout 关闭登录窗口、取消 watcher、清除凭证和 Qwen profile
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
@@ -18,7 +19,10 @@ use tauri::{AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use crate::app_error::{AppError, AppResult};
 use crate::config::app_data_dir;
 use crate::translation_backend::models::WebProviderKind;
-use crate::translation_backend::web_gateway::qwen::{QwenSession, QwenSessionStatus};
+use crate::translation_backend::web_gateway::qwen::{
+    AccountId, AccountMoveDirection, QwenAccountPool, QwenAccountPoolSnapshot, QwenSession,
+    QwenSessionStatus,
+};
 use crate::translation_backend::TranslationBackend;
 
 /// 开始 Qwen 网页登录流程
@@ -45,7 +49,13 @@ pub async fn begin_web_login(
             let app_for_window = app.clone();
             let session_for_watcher: Arc<QwenSession> = session.clone();
 
-            if let Err(error) = spawn_qwen_login_window(app_for_window.clone()) {
+            let app_data = app_data_dir()?;
+            let legacy_account_dir = session
+                .account_dir()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| app_data.join("web_gateway").join("qwen"));
+            if let Err(error) = spawn_qwen_login_window(app_for_window.clone(), &legacy_account_dir)
+            {
                 session.fail_login("无法打开 Qwen 登录窗口");
                 return Err(error);
             }
@@ -70,6 +80,145 @@ pub async fn get_web_login_status(
     }
 }
 
+/// Returns the registry-backed account inventory without exposing account storage paths or secrets.
+#[tauri::command]
+pub async fn get_qwen_account_pool(
+    backend: State<'_, Arc<TranslationBackend>>,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    Ok(backend.web_gateway().qwen_account_pool())
+}
+
+/// Creates an isolated local account slot and begins that account's login flow.
+#[tauri::command]
+pub async fn create_qwen_account(
+    app: AppHandle,
+    backend: State<'_, Arc<TranslationBackend>>,
+    display_name: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let pool = backend.web_gateway().qwen_accounts();
+    let account_id = pool.create_account(&display_name)?;
+    begin_qwen_account_login_inner(app, pool, account_id)?;
+    Ok(backend.web_gateway().qwen_account_pool())
+}
+
+/// Begins login for the requested local Qwen account.
+#[tauri::command]
+pub async fn begin_qwen_account_login(
+    app: AppHandle,
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    let pool = backend.web_gateway().qwen_accounts();
+    begin_qwen_account_login_inner(app, pool, account_id)?;
+    Ok(backend.web_gateway().qwen_account_pool())
+}
+
+#[tauri::command]
+pub async fn rename_qwen_account(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+    display_name: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    Ok(backend
+        .web_gateway()
+        .qwen_accounts()
+        .rename_account(&account_id, &display_name)?)
+}
+
+#[tauri::command]
+pub async fn set_qwen_account_enabled(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+    enabled: bool,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    Ok(backend
+        .web_gateway()
+        .qwen_accounts()
+        .set_account_enabled(&account_id, enabled)?)
+}
+
+#[tauri::command]
+pub async fn move_qwen_account(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+    direction: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    let direction =
+        match direction.as_str() {
+            "up" => AccountMoveDirection::Up,
+            "down" => AccountMoveDirection::Down,
+            _ => return Err(
+                crate::translation_backend::web_gateway::qwen::QwenError::invalid_account_order()
+                    .into(),
+            ),
+        };
+    Ok(backend
+        .web_gateway()
+        .qwen_accounts()
+        .move_account(&account_id, direction)?)
+}
+
+#[tauri::command]
+pub async fn logout_qwen_account(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    Ok(backend
+        .web_gateway()
+        .qwen_accounts()
+        .logout_account(&account_id)?)
+}
+
+#[tauri::command]
+pub async fn delete_qwen_account(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+) -> AppResult<QwenAccountPoolSnapshot> {
+    let account_id = AccountId::parse(&account_id)?;
+    Ok(backend
+        .web_gateway()
+        .qwen_accounts()
+        .delete_account(&account_id)?)
+}
+
+#[tauri::command]
+pub async fn test_qwen_account(
+    backend: State<'_, Arc<TranslationBackend>>,
+    account_id: String,
+    config: crate::config::AppConfig,
+) -> AppResult<String> {
+    let account_id = AccountId::parse(&account_id)?;
+    backend
+        .web_gateway()
+        .qwen_accounts()
+        .test_account(&account_id, &config)
+        .await
+        .map_err(Into::into)
+}
+
+fn begin_qwen_account_login_inner(
+    app: AppHandle,
+    pool: Arc<QwenAccountPool>,
+    account_id: AccountId,
+) -> AppResult<()> {
+    let session = pool.begin_login(&account_id)?;
+    let profile_dir = pool.account_dir(&account_id)?;
+    if let Err(error) = spawn_qwen_login_window(app.clone(), &profile_dir) {
+        pool.cancel_login(&account_id);
+        log::warn!("Qwen account login window failed: {error}");
+        return Err(
+            crate::translation_backend::web_gateway::qwen::QwenError::login_window().into(),
+        );
+    }
+    spawn_qwen_account_login_watcher(app, pool, account_id, session);
+    Ok(())
+}
+
 /// 退出登录：关闭登录窗口、取消 watcher、清除凭证与 profile
 #[tauri::command]
 pub async fn logout_web_account(
@@ -90,12 +239,15 @@ pub async fn logout_web_account(
             }
 
             // WebView2 关闭后 profile 句柄可能短暂未释放，有限重试清理。
+            let account_dir = session.account_dir().map(PathBuf::from);
             let profile_result = tokio::task::spawn_blocking(move || {
                 let mut last_error = None;
                 for attempt in 0..5 {
-                    match crate::translation_backend::web_gateway::credential_store::delete_qwen_profile(
-                        &app_data,
-                    ) {
+                    let cleanup = match &account_dir {
+                        Some(account_dir) => crate::translation_backend::web_gateway::credential_store::delete_qwen_profile_at(account_dir),
+                        None => crate::translation_backend::web_gateway::credential_store::delete_qwen_profile(&app_data),
+                    };
+                    match cleanup {
                         Ok(()) => return Ok(()),
                         Err(error) => last_error = Some(error),
                     }
@@ -116,7 +268,7 @@ pub async fn logout_web_account(
 }
 
 /// 创建 Qwen 登录窗口
-fn spawn_qwen_login_window(app: AppHandle) -> AppResult<()> {
+fn spawn_qwen_login_window(app: AppHandle, account_dir: &std::path::Path) -> AppResult<()> {
     use crate::translation_backend::web_gateway::qwen::QWEN_LOGIN_URL;
     use crate::translation_backend::web_gateway::qwen::QWEN_LOGIN_WINDOW_LABEL;
 
@@ -129,9 +281,10 @@ fn spawn_qwen_login_window(app: AppHandle) -> AppResult<()> {
         return Ok(());
     }
 
-    let app_data = app_data_dir()?;
     let profile_dir =
-        crate::translation_backend::web_gateway::credential_store::qwen_profile_path(&app_data);
+        crate::translation_backend::web_gateway::credential_store::account_profile_path(
+            account_dir,
+        );
     if let Some(parent) = profile_dir.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| AppError::Internal(format!("创建 Qwen profile 父目录失败: {e}")))?;
@@ -266,6 +419,76 @@ fn spawn_qwen_login_watcher(app: AppHandle, session: Arc<QwenSession>) {
         if session.watcher_should_run() {
             log::info!("Qwen 登录 watcher 超时");
             session.fail_login("Qwen 登录超时");
+        }
+    });
+}
+
+/// Account login watcher is explicitly bound to the unique active account ID.
+fn spawn_qwen_account_login_watcher(
+    app: AppHandle,
+    pool: Arc<QwenAccountPool>,
+    account_id: AccountId,
+    session: Arc<QwenSession>,
+) {
+    use crate::translation_backend::web_gateway::qwen::{
+        LOGIN_WATCHER_INTERVAL, LOGIN_WATCHER_TIMEOUT, QWEN_LOGIN_WINDOW_LABEL,
+        QWEN_TICKET_COOKIE_NAME,
+    };
+    use zeroize::Zeroize;
+
+    tokio::spawn(async move {
+        let deadline = std::time::Instant::now() + LOGIN_WATCHER_TIMEOUT;
+        while session.watcher_should_run() && std::time::Instant::now() < deadline {
+            if let Some(win) = app.get_webview_window(QWEN_LOGIN_WINDOW_LABEL) {
+                let cookie_result = tokio::task::spawn_blocking(move || {
+                    win.cookies().map_err(|_| ()).map(|cookies| {
+                        cookies.into_iter().find_map(|cookie| {
+                            (cookie.name() == QWEN_TICKET_COOKIE_NAME && !cookie.value().is_empty())
+                                .then(|| cookie.value().to_string())
+                        })
+                    })
+                })
+                .await;
+                let ticket = match cookie_result {
+                    Ok(Ok(ticket)) => ticket,
+                    Ok(Err(())) | Err(_) => {
+                        pool.fail_login(
+                            &account_id,
+                            crate::translation_backend::web_gateway::qwen::QwenError::login_cookie(
+                            ),
+                        );
+                        return;
+                    }
+                };
+                if let Some(mut ticket) = ticket {
+                    // A re-login Cookie equal to the persisted credential is stale profile data.
+                    // Keep watching for a genuinely new login instead of accepting it.
+                    if session.is_fresh_login_ticket(&crate::translation_backend::web_gateway::credential_store::TicketSecret::new(ticket.clone())) {
+                        let result = pool.complete_login(&account_id, &ticket);
+                        ticket.zeroize();
+                        match result {
+                            Ok(()) => {
+                                if let Some(win) = app.get_webview_window(QWEN_LOGIN_WINDOW_LABEL) {
+                                    let _ = win.close();
+                                }
+                                return;
+                            }
+                            Err(error) => {
+                                pool.fail_login(&account_id, error);
+                                return;
+                            }
+                        }
+                    }
+                    ticket.zeroize();
+                }
+            }
+            tokio::time::sleep(LOGIN_WATCHER_INTERVAL).await;
+        }
+        if session.watcher_should_run() {
+            pool.fail_login(
+                &account_id,
+                crate::translation_backend::web_gateway::qwen::QwenError::login_timeout(),
+            );
         }
     });
 }

@@ -278,9 +278,9 @@ export function TranslationPage({
                 ) : null}
                 <ErrorState
                   message={
-                    friendlyError?.friendlyMessage ??
-                    errorMessage ??
-                    "翻译失败"
+                    friendlyError
+                      ? `${friendlyError.friendlyMessage}${friendlyError.code ? ` [${friendlyError.code}]` : ""}`
+                      : errorMessage ?? "翻译失败"
                   }
                   hint={friendlyError?.hint}
                   onRetry={

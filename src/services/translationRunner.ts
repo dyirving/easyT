@@ -58,6 +58,7 @@ export async function runTranslationRequest(
         commandError.message,
         commandError.kind,
         commandError.totalElapsedMs,
+        commandError.code,
       );
       return;
     }
@@ -71,6 +72,7 @@ export async function runTranslationRequest(
         current.isActiveRequest(requestId) &&
         !!current.translatedText,
       commandError.totalElapsedMs,
+      commandError.code,
     );
   } finally {
     deltaBuffer?.dispose();

@@ -104,6 +104,7 @@ export interface TranslationState {
   status: TranslationStatus;
   errorMessage: string | null;
   errorKind: ErrorKind | null;
+  errorCode?: string | null;
   /** 当前译文是否只收到部分正文，不能作为完整译文复制 */
   isPartial: boolean;
   /** 当前译文是否来自本机缓存；未接入缓存时始终为 false */
@@ -313,6 +314,51 @@ export interface QwenSessionStatus {
   phase: QwenSessionPhase;
   message: string | null;
   updatedAt: number | null;
+}
+
+export type QwenAccountDisplayStatus =
+  | "disabled"
+  | "loggingIn"
+  | "loggedOut"
+  | "expired"
+  | "busy"
+  | "coolingDown"
+  | "pendingVerification"
+  | "available";
+
+export interface QwenAccountSnapshot {
+  accountId: string;
+  displayName: string;
+  enabled: boolean;
+  order: number;
+  status: QwenAccountDisplayStatus;
+  cooldownRemainingSeconds?: number;
+  message?: string;
+  messageCode?: string;
+  actions: QwenAccountActions;
+}
+
+export interface QwenAccountActions {
+  canRename: boolean;
+  canToggleEnabled: boolean;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+  canLogin: boolean;
+  canLogout: boolean;
+  canTest: boolean;
+  canDelete: boolean;
+}
+
+export interface QwenAccountPoolSnapshot {
+  accounts: QwenAccountSnapshot[];
+  maximumAccounts: number;
+  loginAccountId?: string;
+  warning?: QwenAccountPoolWarning;
+}
+
+export interface QwenAccountPoolWarning {
+  code: string;
+  message: string;
 }
 
 /**

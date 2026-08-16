@@ -48,6 +48,7 @@ interface TranslationStore extends TranslationState {
     originalText?: string,
     preservePartial?: boolean,
     totalElapsedMs?: number,
+    code?: string,
   ) => boolean;
   /** 重新翻译失败：仍是最新请求且处于 refreshing 时回退到旧缓存译文 */
   failRefreshRequest: (
@@ -55,6 +56,7 @@ interface TranslationStore extends TranslationState {
     message: string,
     kind?: ErrorKind,
     totalElapsedMs?: number,
+    code?: string,
   ) => boolean;
   /** 清除成功：保留当前译文，只移除缓存来源提示 */
   clearCacheSourceNotice: () => void;
@@ -77,6 +79,7 @@ const initialState: TranslationState = {
   status: "idle",
   errorMessage: null,
   errorKind: null,
+  errorCode: null,
   isPartial: false,
   fromCache: false,
   refreshErrorMessage: null,
@@ -133,6 +136,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: preserveCached ? "refreshing" : "translating",
       errorMessage: null,
       errorKind: null,
+      errorCode: null,
       refreshErrorMessage: null,
       isPartial: false,
       ...clearedActiveProgress,
@@ -150,6 +154,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: "error",
       errorMessage: message,
       errorKind: kind ?? null,
+      errorCode: null,
       isPartial: false,
       fromCache: false,
       refreshErrorMessage: null,
@@ -172,6 +177,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: "streaming",
       errorMessage: null,
       errorKind: null,
+      errorCode: null,
       isPartial: false,
     }));
     return true;
@@ -227,6 +233,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: "idle",
       errorMessage: null,
       errorKind: null,
+      errorCode: null,
       isPartial: false,
       fromCache: false,
       refreshErrorMessage: null,
@@ -257,6 +264,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
     originalText,
     preservePartial = false,
     totalElapsedMs,
+    code,
   ) => {
     if (get().requestId !== requestId) return false;
     set({
@@ -265,6 +273,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: "error",
       errorMessage: message,
       errorKind: kind ?? null,
+      errorCode: code ?? null,
       isPartial: preservePartial && get().translatedText.length > 0,
       fromCache: false,
       refreshErrorMessage: null,
@@ -274,7 +283,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
     });
     return true;
   },
-  failRefreshRequest: (requestId, message, _kind, totalElapsedMs) => {
+  failRefreshRequest: (requestId, message, _kind, totalElapsedMs, _code) => {
     const current = get();
     if (current.requestId !== requestId || current.status !== "refreshing") {
       return false;
@@ -283,6 +292,7 @@ export const useTranslationStore = create<TranslationStore>((set, get) => ({
       status: "success",
       errorMessage: null,
       errorKind: null,
+      errorCode: null,
       refreshErrorMessage: message,
       ...clearedActiveProgress,
       totalElapsedMs: totalElapsedMs ?? null,

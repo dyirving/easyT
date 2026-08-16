@@ -8,6 +8,8 @@
 
 use serde::Serialize;
 
+use crate::translation_backend::web_gateway::qwen::QwenError;
+
 /// 翻译后端统一错误
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
@@ -68,6 +70,14 @@ pub enum BackendError {
     #[error("凭证文件已损坏")]
     CredentialCorrupted,
 
+    /// Qwen account-pool selection failed before a concrete upstream request.
+    #[error("{0}")]
+    QwenPool(QwenError),
+
+    /// A Qwen request reached the protocol boundary and has a stable public Qwen error code.
+    #[error("{0}")]
+    Qwen(QwenError),
+
     /// 内部错误（不应暴露底层堆栈给前端）
     #[error("内部错误: {0}")]
     Internal(String),
@@ -90,6 +100,8 @@ pub enum BackendErrorKind {
     ConfigInvalid,
     UnsupportedPlatform,
     CredentialCorrupted,
+    QwenPool,
+    Qwen,
     Internal,
 }
 
@@ -110,6 +122,8 @@ impl BackendError {
             BackendError::ConfigInvalid(_) => BackendErrorKind::ConfigInvalid,
             BackendError::UnsupportedPlatform => BackendErrorKind::UnsupportedPlatform,
             BackendError::CredentialCorrupted => BackendErrorKind::CredentialCorrupted,
+            BackendError::QwenPool(_) => BackendErrorKind::QwenPool,
+            BackendError::Qwen(_) => BackendErrorKind::Qwen,
             BackendError::Internal(_) => BackendErrorKind::Internal,
         }
     }
@@ -123,6 +137,8 @@ impl BackendError {
             BackendError::InvalidResponse(_) => "响应格式无效".to_string(),
             BackendError::StreamingUnsupported(_) => "当前后端不支持流式输出".to_string(),
             BackendError::Internal(_) => "内部错误".to_string(),
+            BackendError::QwenPool(error) => error.safe_message().to_string(),
+            BackendError::Qwen(error) => error.safe_message().to_string(),
             _ => self.to_string(),
         }
     }

@@ -16,6 +16,7 @@
 //!
 //! 需要先在锁内完成状态判断和状态切换，然后释放锁，再执行外部操作。
 
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,6 +24,7 @@ use serde::Serialize;
 
 use crate::translation_backend::error::BackendError;
 
+use super::account::{AccountId, PersistedLogin};
 use crate::translation_backend::web_gateway::credential_store::{self, TicketSecret};
 
 /// 登录态阶段
@@ -46,6 +48,8 @@ pub enum QwenSessionPhase {
 pub struct QwenSessionStatus {
     pub phase: QwenSessionPhase,
     pub message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
     pub updated_at: Option<u64>,
 }
 
@@ -62,6 +66,7 @@ struct SessionState {
     /// 进入 LoggingIn 前的状态，用于取消或失败时恢复。
     phase_before_login: Option<QwenSessionPhase>,
     message: Option<String>,
+    message_code: Option<String>,
     updated_at: Option<u64>,
     /// 登录 watcher 是否应该继续运行
     watcher_should_run: bool,
@@ -73,6 +78,7 @@ impl Default for SessionState {
             phase: QwenSessionPhase::LoggedOut,
             phase_before_login: None,
             message: None,
+            message_code: None,
             updated_at: Some(now_unix()),
             watcher_should_run: false,
         }
@@ -82,15 +88,47 @@ impl Default for SessionState {
 /// QwenSession：管理登录态与凭证
 ///
 /// 不可在锁内执行外部 I/O；锁内只做状态判断与切换
+#[derive(Debug)]
 pub struct QwenSession {
     state: Mutex<SessionState>,
+    account_id: Option<AccountId>,
+    account_dir: Option<PathBuf>,
 }
 
 impl QwenSession {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(SessionState::default()),
+            account_id: None,
+            account_dir: None,
         }
+    }
+
+    pub fn for_account(
+        account_id: AccountId,
+        account_dir: PathBuf,
+        persisted_login: PersistedLogin,
+    ) -> Self {
+        Self {
+            state: Mutex::new(SessionState {
+                phase: match persisted_login {
+                    PersistedLogin::LoggedOut => QwenSessionPhase::LoggedOut,
+                    PersistedLogin::Ready => QwenSessionPhase::Ready,
+                    PersistedLogin::Expired => QwenSessionPhase::Expired,
+                },
+                ..SessionState::default()
+            }),
+            account_id: Some(account_id),
+            account_dir: Some(account_dir),
+        }
+    }
+
+    pub fn account_id(&self) -> Option<&AccountId> {
+        self.account_id.as_ref()
+    }
+
+    pub fn account_dir(&self) -> Option<&Path> {
+        self.account_dir.as_deref()
     }
 
     /// 启动时从凭证文件恢复状态
@@ -98,7 +136,7 @@ impl QwenSession {
     /// - 文件格式有效：Ready
     /// - 文件损坏：CredentialCorrupted（前端显示需要重新登录）
     pub fn restore_from_storage(&self, app_data: &std::path::Path) {
-        let new_phase = match credential_store::load_ticket(app_data) {
+        let new_phase = match self.load_ticket(app_data) {
             Ok(Some(_)) => QwenSessionPhase::Ready,
             Ok(None) => QwenSessionPhase::LoggedOut,
             Err(BackendError::CredentialCorrupted) => {
@@ -124,6 +162,7 @@ impl QwenSession {
         QwenSessionStatus {
             phase: g.phase,
             message: g.message.clone(),
+            code: g.message_code.clone(),
             updated_at: g.updated_at,
         }
     }
@@ -139,9 +178,21 @@ impl QwenSession {
         g.phase_before_login = Some(g.phase);
         g.phase = QwenSessionPhase::LoggingIn;
         g.message = Some("正在登录...".to_string());
+        g.message_code = None;
         g.updated_at = Some(now_unix());
         g.watcher_should_run = true;
         true
+    }
+
+    /// Login watchers must reject the ticket already stored before re-login.
+    /// This avoids accepting a profile's stale Cookie as a new authentication.
+    pub fn is_fresh_login_ticket(&self, ticket: &TicketSecret) -> bool {
+        let current = self.load_ticket_for_account();
+        match current {
+            Ok(Some(existing)) => !constant_time_ticket_eq(existing.as_str(), ticket.as_str()),
+            Ok(None) => true,
+            Err(_) => true,
+        }
     }
 
     /// Watcher 检查是否应继续运行
@@ -161,14 +212,42 @@ impl QwenSession {
         app_data: &std::path::Path,
         ticket: &str,
     ) -> Result<(), BackendError> {
-        credential_store::save_ticket(app_data, ticket)?;
+        match &self.account_dir {
+            Some(account_dir) => credential_store::save_ticket_at(
+                &credential_store::account_credentials_path(account_dir),
+                ticket,
+            )?,
+            None => credential_store::save_ticket(app_data, ticket)?,
+        }
+        let mut g = self.lock();
+        g.phase = QwenSessionPhase::Ready;
+        g.phase_before_login = None;
+        g.message = None;
+        g.message_code = None;
+        g.updated_at = Some(now_unix());
+        g.watcher_should_run = false;
+        Ok(())
+    }
+
+    /// Finishes an already persisted account login without another file write.
+    pub fn mark_login_complete(&self) {
         let mut g = self.lock();
         g.phase = QwenSessionPhase::Ready;
         g.phase_before_login = None;
         g.message = None;
         g.updated_at = Some(now_unix());
         g.watcher_should_run = false;
-        Ok(())
+    }
+
+    /// Updates only the in-memory session after the pool has durably committed logout.
+    pub fn mark_logged_out(&self) {
+        let mut g = self.lock();
+        g.phase = QwenSessionPhase::LoggedOut;
+        g.phase_before_login = None;
+        g.message = None;
+        g.message_code = None;
+        g.updated_at = Some(now_unix());
+        g.watcher_should_run = false;
     }
 
     /// 登录被用户取消：恢复到登录前状态
@@ -192,6 +271,22 @@ impl QwenSession {
             .take()
             .unwrap_or(QwenSessionPhase::LoggedOut);
         g.message = Some(message.into());
+        g.message_code = None;
+        g.updated_at = Some(now_unix());
+    }
+
+    pub fn fail_login_with_code(&self, message: impl Into<String>, code: &str) {
+        let mut g = self.lock();
+        g.watcher_should_run = false;
+        if g.phase != QwenSessionPhase::LoggingIn {
+            return;
+        }
+        g.phase = g
+            .phase_before_login
+            .take()
+            .unwrap_or(QwenSessionPhase::LoggedOut);
+        g.message = Some(message.into());
+        g.message_code = Some(code.to_string());
         g.updated_at = Some(now_unix());
     }
 
@@ -201,18 +296,25 @@ impl QwenSession {
         g.phase = QwenSessionPhase::Expired;
         g.phase_before_login = None;
         g.message = Some("登录状态已过期".to_string());
+        g.message_code = None;
         g.updated_at = Some(now_unix());
     }
 
     /// 退出登录：删除凭证并切换为 LoggedOut
     pub fn logout(&self, app_data: &std::path::Path) -> Result<(), BackendError> {
-        credential_store::delete_ticket(app_data)?;
+        match &self.account_dir {
+            Some(account_dir) => credential_store::delete_ticket_at(
+                &credential_store::account_credentials_path(account_dir),
+            )?,
+            None => credential_store::delete_ticket(app_data)?,
+        }
         // 不强制删除 profile（用户可能想保留浏览器缓存）
         // 由命令层显式调用 delete_qwen_profile 决定
         let mut g = self.lock();
         g.phase = QwenSessionPhase::LoggedOut;
         g.phase_before_login = None;
         g.message = None;
+        g.message_code = None;
         g.updated_at = Some(now_unix());
         g.watcher_should_run = false;
         Ok(())
@@ -230,7 +332,7 @@ impl QwenSession {
             g.phase
         };
         match phase {
-            QwenSessionPhase::Ready => credential_store::load_ticket(app_data),
+            QwenSessionPhase::Ready => self.load_ticket(app_data),
             QwenSessionPhase::LoggingIn => {
                 // 登录中不允许借用（避免误用未完成的凭证）
                 Err(BackendError::LoginRequired)
@@ -246,21 +348,43 @@ impl QwenSession {
             poisoned.into_inner()
         })
     }
+
+    fn load_ticket(&self, app_data: &Path) -> Result<Option<TicketSecret>, BackendError> {
+        match &self.account_dir {
+            Some(account_dir) => credential_store::load_ticket_at(
+                &credential_store::account_credentials_path(account_dir),
+            ),
+            None => credential_store::load_ticket(app_data),
+        }
+    }
+
+    fn load_ticket_for_account(&self) -> Result<Option<TicketSecret>, BackendError> {
+        match &self.account_dir {
+            Some(account_dir) => credential_store::load_ticket_at(
+                &credential_store::account_credentials_path(account_dir),
+            ),
+            None => Ok(None),
+        }
+    }
+}
+
+fn constant_time_ticket_eq(left: &str, right: &str) -> bool {
+    use zeroize::Zeroize;
+
+    let mut left_hash = blake3::hash(left.as_bytes()).as_bytes().to_vec();
+    let mut right_hash = blake3::hash(right.as_bytes()).as_bytes().to_vec();
+    let mut difference = left_hash.len() ^ right_hash.len();
+    for (left_byte, right_byte) in left_hash.iter().zip(right_hash.iter()) {
+        difference |= usize::from(left_byte ^ right_byte);
+    }
+    left_hash.zeroize();
+    right_hash.zeroize();
+    difference == 0
 }
 
 impl Default for QwenSession {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-pub fn ensure_qwen_ready(session: &QwenSession) -> Result<(), BackendError> {
-    let status = session.status();
-    match status.phase {
-        QwenSessionPhase::Ready => Ok(()),
-        QwenSessionPhase::LoggedOut => Err(BackendError::LoginRequired),
-        QwenSessionPhase::LoggingIn => Err(BackendError::LoginRequired),
-        QwenSessionPhase::Expired => Err(BackendError::SessionExpired),
     }
 }
 
@@ -405,5 +529,21 @@ mod tests {
         let result = session.borrow_ticket(&dir);
         assert!(matches!(result, Err(BackendError::SessionExpired)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn account_session_rejects_the_preexisting_ticket_as_a_relogin_result() {
+        let dir = temp_dir();
+        let id = AccountId::new();
+        let session = QwenSession::for_account(id, dir.clone(), PersistedLogin::Ready);
+        session
+            .complete_login(&dir, "old-ticket")
+            .expect("seed ticket");
+
+        let old = TicketSecret::new("old-ticket".to_string());
+        let replacement = TicketSecret::new("new-ticket".to_string());
+        assert!(!session.is_fresh_login_ticket(&old));
+        assert!(session.is_fresh_login_ticket(&replacement));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

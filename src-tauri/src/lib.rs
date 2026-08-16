@@ -18,7 +18,11 @@ use commands::{
     },
     selection::capture_selected_text,
     translate::{test_api_connection, translate_text, TranslationRequestManager},
-    web_gateway::{begin_web_login, get_web_login_status, logout_web_account},
+    web_gateway::{
+        begin_qwen_account_login, begin_web_login, create_qwen_account, delete_qwen_account,
+        get_qwen_account_pool, get_web_login_status, logout_qwen_account, logout_web_account,
+        move_qwen_account, rename_qwen_account, set_qwen_account_enabled, test_qwen_account,
+    },
     window::position_window_near_mouse,
 };
 use config::{app_data_dir, load_config};
@@ -93,10 +97,8 @@ pub fn run() {
             let http_client = reqwest::Client::new();
             // L1 立即可用；L2 在专用 worker 中异步初始化，失败时静默降级到 L1。
             let cache = TranslationCache::start(&data_dir);
-            let backend = TranslationBackend::new(http_client, Arc::clone(&cache));
-            // 启动时只检查 credentials.bin 是否存在且格式有效，不创建登录 WebView
-            let qwen_session = backend.web_gateway().qwen_session();
-            qwen_session.restore_from_storage(&data_dir);
+            let backend = TranslationBackend::new(http_client, Arc::clone(&cache), &data_dir)
+                .map_err(|error| std::io::Error::other(error.safe_message()))?;
             app.manage(cache);
             app.manage(Arc::new(backend));
             let history = TranslationHistory::start(&data_dir, history_limit);
@@ -142,8 +144,8 @@ pub fn run() {
                     if let Some(backend) =
                         window.app_handle().try_state::<Arc<TranslationBackend>>()
                     {
-                        let session = backend.web_gateway().qwen_session();
-                        session.cancel_login();
+                        backend.web_gateway().qwen_accounts().cancel_all_logins();
+                        backend.web_gateway().qwen_session().cancel_login();
                     }
                 }
             }
@@ -158,7 +160,16 @@ pub fn run() {
             position_window_near_mouse,
             copy_translation,
             begin_web_login,
+            begin_qwen_account_login,
+            create_qwen_account,
+            rename_qwen_account,
+            set_qwen_account_enabled,
+            move_qwen_account,
+            logout_qwen_account,
+            delete_qwen_account,
+            test_qwen_account,
             get_web_login_status,
+            get_qwen_account_pool,
             logout_web_account,
             get_translation_cache_stats,
             clear_translation_cache,
@@ -203,8 +214,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 let _ = app.emit(TRAY_EVENT_QUIT, ());
                 // 退出前清理 Qwen 登录窗口与 watcher
                 if let Some(backend) = app.try_state::<Arc<TranslationBackend>>() {
-                    let session = backend.web_gateway().qwen_session();
-                    session.cancel_watcher();
+                    backend.web_gateway().qwen_accounts().shutdown();
                 }
                 if let Some(qwen_win) = app.get_webview_window(QWEN_LOGIN_WINDOW_LABEL) {
                     let _ = qwen_win.close();

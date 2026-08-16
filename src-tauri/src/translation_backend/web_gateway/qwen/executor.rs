@@ -105,7 +105,7 @@ impl QwenRequestExecutor {
                 status.as_u16(),
                 response_body.len()
             );
-            return Err(map_status_to_error(status));
+            return Err(map_status_to_error(status, &response_body));
         }
 
         progress.phase(TranslationPhase::WaitingForContent, None);

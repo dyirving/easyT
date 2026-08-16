@@ -153,8 +153,8 @@ export function useTermbaseController() {
   const confirmDelete = async () => {
     if (!deleting || pending) return;
     const id = deleting;
-    setDeleting(null);
-    await runMutation(() => deleteTermbaseEntry(id));
+    const next = await runMutation(() => deleteTermbaseEntry(id));
+    if (next) setDeleting(null);
   };
 
   const cancelDelete = () => setDeleting(null);

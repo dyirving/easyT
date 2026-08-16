@@ -117,7 +117,11 @@ function TermList({ controller }: { controller: Controller }) {
           aria-label="搜索术语"
         />
       </div>
-      <div className="space-y-2">
+      <div
+        role="list"
+        aria-label="术语条目"
+        className="max-h-48 space-y-2 overflow-y-auto pr-1"
+      >
         {controller.visibleEntries.length === 0 ? (
           <p className="rounded-lg border border-line bg-surface-soft/40 px-3 py-6 text-center text-sm text-ink-muted">
             {snapshot.entries.length === 0
@@ -177,7 +181,10 @@ function TermRow({
   controller: Controller;
 }) {
   return (
-    <div className="flex items-center gap-3 rounded-lg border border-line bg-surface-soft/40 px-3 py-2">
+    <div
+      role="listitem"
+      className="flex items-center gap-3 rounded-lg border border-line bg-surface-soft/40 px-3 py-2"
+    >
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium text-ink">
           {entry.sourceTerm}

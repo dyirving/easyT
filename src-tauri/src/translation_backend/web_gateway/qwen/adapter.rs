@@ -316,7 +316,7 @@ pub(crate) fn map_request_error(err: reqwest::Error) -> BackendError {
     if err.is_timeout() {
         BackendError::Qwen(QwenError::timeout())
     } else if let Some(status) = err.status() {
-        map_status_to_error(status)
+        map_status_to_error(status, "")
     } else {
         BackendError::Qwen(QwenError::network())
     }
@@ -330,12 +330,16 @@ pub(crate) fn map_stream_error(err: reqwest::Error) -> BackendError {
     }
 }
 
-pub(crate) fn map_status_to_error(status: reqwest::StatusCode) -> BackendError {
+pub(crate) fn map_status_to_error(status: reqwest::StatusCode, body: &str) -> BackendError {
     match status.as_u16() {
         401 => BackendError::Qwen(QwenError::auth_401()),
         403 => BackendError::Qwen(QwenError::auth_403()),
         429 => BackendError::Qwen(QwenError::upstream_rate_limited()),
         500..=599 => BackendError::Qwen(QwenError::upstream_server_error(status.as_u16())),
+        400 if is_context_length_pattern(body) => {
+            log::warn!("termbase_prompt_context_error: recognized Qwen HTTP context-length");
+            BackendError::InvalidResponse(TERMBASE_CONTEXT_LENGTH_MESSAGE.to_string())
+        }
         _ => BackendError::Qwen(QwenError::upstream_other()),
     }
 }
@@ -513,9 +517,25 @@ mod tests {
             "4001",
             "The context length of the request exceeds the limit"
         ));
-        assert!(is_qwen_context_length_error("1001", "请求内容超出上下文长度限制"));
+        assert!(is_qwen_context_length_error(
+            "1001",
+            "请求内容超出上下文长度限制"
+        ));
         assert!(!is_qwen_context_length_error("1001", "rate limited"));
         assert!(!is_qwen_context_length_error("4001", "model not found"));
+    }
+
+    #[test]
+    fn http_context_length_error_gets_dedicated_message_without_body() {
+        let error = map_status_to_error(
+            reqwest::StatusCode::BAD_REQUEST,
+            r#"{"message":"The input text is too long, max 3000 tokens"}"#,
+        );
+
+        assert!(matches!(
+            error,
+            BackendError::InvalidResponse(ref message) if message == TERMBASE_CONTEXT_LENGTH_MESSAGE
+        ));
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tauri::State;
 
 use crate::app_error::{AppError, AppResult};
-use crate::termbase::{Termbase, TermbaseError, TermbaseSnapshot, TermEntryInput};
+use crate::termbase::{TermEntryInput, Termbase, TermbaseError, TermbaseSnapshot};
 
 /// 用户可修正的输入类错误 → ConfigInvalid；存储类错误 → 安全内部错误。
 fn map_termbase_error(error: TermbaseError) -> AppError {
@@ -14,7 +14,7 @@ fn map_termbase_error(error: TermbaseError) -> AppError {
         | TermbaseError::Duplicate(message)
         | TermbaseError::NotFound(message)
         | TermbaseError::MaxEntries(message) => AppError::ConfigInvalid(message),
-        TermbaseError::Storage(message) => AppError::Internal(message),
+        TermbaseError::Storage(_) => AppError::Internal("术语表保存失败，请稍后重试".to_string()),
     }
 }
 
@@ -82,10 +82,8 @@ mod tests {
     }
 
     fn open() -> (Termbase, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "easyT-termbase-commands-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("easyT-termbase-commands-{}", uuid::Uuid::new_v4()));
         let (termbase, _) = Termbase::open(&dir).expect("open");
         (termbase, dir)
     }
@@ -93,10 +91,19 @@ mod tests {
     #[test]
     fn user_fixable_errors_map_to_config_invalid() {
         let cases: [(TermbaseError, &str); 4] = [
-            (TermbaseError::InvalidInput("源术语不能为空".into()), "ConfigInvalid"),
+            (
+                TermbaseError::InvalidInput("源术语不能为空".into()),
+                "ConfigInvalid",
+            ),
             (TermbaseError::Duplicate("术语冲突".into()), "ConfigInvalid"),
-            (TermbaseError::NotFound("条目不存在".into()), "ConfigInvalid"),
-            (TermbaseError::MaxEntries("已达上限".into()), "ConfigInvalid"),
+            (
+                TermbaseError::NotFound("条目不存在".into()),
+                "ConfigInvalid",
+            ),
+            (
+                TermbaseError::MaxEntries("已达上限".into()),
+                "ConfigInvalid",
+            ),
         ];
         for (error, expected_kind) in cases {
             let mapped = map_termbase_error(error);
@@ -105,11 +112,15 @@ mod tests {
     }
 
     #[test]
-    fn storage_errors_map_to_internal_without_detail() {
-        let mapped = map_termbase_error(TermbaseError::Storage("io: 磁盘损坏".into()));
+    fn storage_errors_map_to_safe_internal_message() {
+        let mapped = map_termbase_error(TermbaseError::Storage(
+            "提交术语表失败: D:\\easyT_Data\\termbase\\termbase.json: access denied".into(),
+        ));
         assert_eq!(mapped.kind_str(), "Internal");
-        // Internal 分类由前端映射为通用错误文案，底层 io 细节不进入用户可见文案。
-        assert!(mapped.to_string().contains("io:"));
+        assert_eq!(mapped.to_string(), "内部错误: 术语表保存失败，请稍后重试");
+        let serialized = serde_json::to_string(&mapped).expect("serialize safe error");
+        assert!(!serialized.contains("easyT_Data"));
+        assert!(!serialized.contains("access denied"));
     }
 
     #[test]
@@ -119,7 +130,10 @@ mod tests {
 
         let created = termbase.create(input("function", "函数")).expect("create");
         assert_eq!(created.entries.len(), 1);
-        assert_eq!(created.maximum_entries, crate::termbase::model::MAX_TERMBASE_ENTRIES);
+        assert_eq!(
+            created.maximum_entries,
+            crate::termbase::model::MAX_TERMBASE_ENTRIES
+        );
         assert!(!created.enabled, "总开关默认关闭");
         let id = created.entries[0].id.clone();
 
@@ -148,10 +162,8 @@ mod tests {
 
     #[test]
     fn snapshot_warning_is_delivered_exactly_once() {
-        let dir = std::env::temp_dir().join(format!(
-            "easyT-termbase-commands-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("easyT-termbase-commands-{}", uuid::Uuid::new_v4()));
         // 先建目录并写入损坏文件，迫使 open 进入隔离恢复路径。
         let storage_dir = dir.join("termbase");
         std::fs::create_dir_all(&storage_dir).expect("create dir");

@@ -5,7 +5,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Approved |
-| 版本 | 0.2 |
+| 版本 | 0.3 |
 | 最后更新 | 2026-08-17 |
 | 目标项目 | easyT 2.x / 翻译后端、缓存与设置页 |
 | 预期实施者 | Model-neutral coding agent |
@@ -19,6 +19,7 @@
 |---|---|---|
 | 0.1 | 2026-08-17 | 初始实施设计与执行协议。 |
 | 0.2 | 2026-08-17 | 项目所有者批准；补充 CacheKey 编码、初始化、匹配边界、错误映射和执行合同。 |
+| 0.3 | 2026-08-17 | 修复实现审查发现：Qwen HTTP 上下文错误、IPC 脱敏、英文源术语约束、Dialog 滚动/删除状态、设置页覆盖，并同步历史记录语义。 |
 
 > 项目所有者已在 2026-08-17 明确批准本文档。后续涉及接口、数据、Prompt、缓存身份、匹配规则、错误语义或执行范围的变化，必须按本文偏差协议处理并同步修订历史。
 
@@ -45,7 +46,7 @@
 - 不做译文后替换、强制替换或模型遵守检测。
 - 不支持非英文源术语、正则、模糊匹配、词形还原、手工优先级或术语分组。
 - 不做 CSV/TBX 导入导出、云同步、协作、自动抽取、统计或历史术语版本追溯。
-- 不改变翻译历史 schema 或恢复历史记录重新翻译功能。
+- 不改变翻译历史 schema；历史记录继续仅用于回看与复制，不提供重新翻译或替换。
 - 不新增第三方依赖、UI dependency、后台探测、永久 timer 或 API capability。
 
 ### 2.3 已验证事实、假设与约束
@@ -500,7 +501,7 @@ On conflict, do not silently choose. Follow §13.6. Data loss, destructive opera
 Must not change without an approved deviation:
 
 - `SDD-qwen-multi-account-round-robin.md` and unrelated Qwen account behavior.
-- Translation history schema, history retranslation removal, global Refresh semantics, cache capacity, cache clear policy, Qwen protocol DTOs, dependencies and Tauri capabilities.
+- Translation history schema, global Refresh semantics, cache capacity, cache clear policy, Qwen protocol DTOs, dependencies and Tauri capabilities.
 - Existing `WebGatewayPanel.tsx` changes unrelated to Termbase.
 
 ### 13.4 Mandatory Preflight

@@ -119,11 +119,7 @@ pub struct TermbaseSnapshot {
 }
 
 /// 校验文本字段：字符数上下限、不得只含空白、不得含控制字符。
-fn validate_text_field(
-    label: &str,
-    value: &str,
-    max_chars: usize,
-) -> Result<(), TermbaseError> {
+fn validate_text_field(label: &str, value: &str, max_chars: usize) -> Result<(), TermbaseError> {
     let count = value.chars().count();
     if !(1..=max_chars).contains(&count) {
         return Err(TermbaseError::InvalidInput(format!(
@@ -146,6 +142,11 @@ fn validate_text_field(
 /// 校验条目输入字段与目标语言白名单。
 pub fn validate_entry_input(input: &TermEntryInput) -> Result<(), TermbaseError> {
     validate_text_field("源术语", &input.source_term, MAX_SOURCE_TERM_CHARS)?;
+    if !input.source_term.is_ascii() {
+        return Err(TermbaseError::InvalidInput(
+            "源术语只能包含英文、数字、空格或英文标点".to_string(),
+        ));
+    }
     validate_text_field("指定译法", &input.target_term, MAX_TARGET_TERM_CHARS)?;
     if !TARGET_LANGUAGES.contains(&input.target_language.as_str()) {
         return Err(TermbaseError::InvalidInput(format!(
@@ -280,6 +281,15 @@ mod tests {
         assert!(validate_entry_input(&input("a", "简体中文", "b\u{1}")).is_err());
         // 常规标点与空格合法
         assert!(validate_entry_input(&input("neural network", "简体中文", "神经网络")).is_ok());
+    }
+
+    #[test]
+    fn rejects_non_english_source_terms() {
+        assert!(validate_entry_input(&input("神经网络", "简体中文", "neural network")).is_err());
+        assert!(validate_entry_input(&input("function😀", "简体中文", "函数")).is_err());
+        assert!(
+            validate_entry_input(&input("neural-network v2", "简体中文", "神经网络 v2")).is_ok()
+        );
     }
 
     #[test]

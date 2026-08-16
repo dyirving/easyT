@@ -124,6 +124,19 @@ describe("TermbaseDialog", () => {
     expect(await screen.findByText("term-0")).toBeInTheDocument();
   });
 
+  it("keeps the term list in an independently scrollable region", async () => {
+    vi.mocked(getTermbase).mockResolvedValue(
+      termbaseSnapshot([termEntry("1", "function", "函数")]),
+    );
+    render(<Harness />);
+
+    await screen.findByText("function");
+    expect(screen.getByRole("list", { name: "术语条目" })).toHaveClass(
+      "max-h-48",
+      "overflow-y-auto",
+    );
+  });
+
   it("toggles the master switch and per-entry switches", async () => {
     vi.mocked(getTermbase).mockResolvedValue(
       termbaseSnapshot([termEntry("1", "function", "函数")]),
@@ -241,11 +254,14 @@ describe("TermbaseDialog", () => {
     expect(updateTermbaseEntry).not.toHaveBeenCalled();
   });
 
-  it("deletes only after confirmation, hiding the main dialog while confirming", async () => {
+  it("keeps the confirmation open and pending until deletion succeeds", async () => {
     vi.mocked(getTermbase).mockResolvedValue(
       termbaseSnapshot([termEntry("1", "function", "函数")]),
     );
-    vi.mocked(deleteTermbaseEntry).mockResolvedValue(termbaseSnapshot([]));
+    let resolveDelete: (snapshot: ReturnType<typeof termbaseSnapshot>) => void;
+    vi.mocked(deleteTermbaseEntry).mockImplementation(
+      () => new Promise((resolve) => { resolveDelete = resolve; }),
+    );
     render(<Harness />);
 
     fireEvent.click(
@@ -260,6 +276,14 @@ describe("TermbaseDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "删除" }));
     await waitFor(() =>
       expect(deleteTermbaseEntry).toHaveBeenCalledWith("1"),
+    );
+    expect(screen.getByRole("dialog", { name: "删除术语条目？" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "正在确认" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /正在确认 删除/ })).toBeDisabled();
+
+    resolveDelete!(termbaseSnapshot([]));
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "删除术语条目？" })).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("function")).not.toBeInTheDocument();
   });

@@ -195,6 +195,26 @@ describe("useTermbaseController", () => {
     expect(result.current.snapshot?.entries).toHaveLength(0);
   });
 
+  it("keeps the delete intent while its mutation is pending", async () => {
+    vi.mocked(getTermbase).mockResolvedValue(
+      termbaseSnapshot([termEntry("1", "function", "函数")]),
+    );
+    let resolveDelete: (snapshot: ReturnType<typeof termbaseSnapshot>) => void;
+    vi.mocked(deleteTermbaseEntry).mockImplementation(
+      () => new Promise((resolve) => { resolveDelete = resolve; }),
+    );
+    const { result } = renderHook(() => useTermbaseController());
+    await waitFor(() => expect(result.current.phase).toBe("ready"));
+
+    act(() => result.current.requestDelete(result.current.snapshot!.entries[0]));
+    act(() => void result.current.confirmDelete());
+    await waitFor(() => expect(result.current.pending).toBe(true));
+    expect(result.current.deleting).toBe("1");
+
+    await act(async () => resolveDelete!(termbaseSnapshot([])));
+    expect(result.current.deleting).toBeNull();
+  });
+
   it("closeView resets query, page, drafts and delete intent", async () => {
     vi.mocked(getTermbase).mockResolvedValue(
       termbaseSnapshot([termEntry("1", "function", "函数")]),

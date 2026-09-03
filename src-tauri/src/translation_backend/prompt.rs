@@ -7,7 +7,8 @@ use crate::termbase::EffectiveTermbase;
 /// Prompt 版本：内容或格式要求变化时必须手动提升，
 /// 使既有缓存键（含 prompt_version）自然失效（《翻译缓存规则》§5.3）。
 /// 1 -> 2：共享模板新增条件术语约束块（术语表）。
-pub const PROMPT_VERSION: u32 = 2;
+/// 2 -> 3：共享模板新增 GFM 表格输出约束。
+pub const PROMPT_VERSION: u32 = 3;
 
 /// 根据目标语言动态拼装系统提示词，并在有效术语集非空时追加术语约束块。
 pub fn build_system_prompt(target_language: &str, termbase: &EffectiveTermbase) -> String {
@@ -24,12 +25,18 @@ pub fn build_system_prompt(target_language: &str, termbase: &EffectiveTermbase) 
 5. 不要把公式写成转义后的普通文本，例如不要输出 `\$X\^2\$`、`\\(X\\)` 或散落的 `\in`；应输出 `$X^2$`、`$X \in \mathbb{{R}}$`。
 6. 公式内部保持合法 LaTeX，优先使用 KaTeX 支持的写法，如 `\mathbb{{R}}`、`\times`、`_`、`^`、`\text{{model}}`；包含 `\tag{{n}}` 的编号公式必须使用 `$$...$$` 独立成段，不能使用 `$...$`。
 7. 翻译公式周围的自然语言，但不要翻译或改写公式内部的变量名、维度符号、函数名和下标含义。
-8. 代码标识符、库名、包名、命令、API 名称等不可翻译部分保留原文，但要翻译其类别或上下文含义；例如 "Python requests" 应译为 "Python requests 库"。
-9. 重要专业术语首次出现时，可以使用"中文术语（English Term）"形式。
-10. 如果输入是短语、标题或不完整的句子，也必须给出{target_language}表达，不要简单照抄原文。
-11. 如果输入确实完全由不可翻译专名组成，可保留专名并补充最小必要的{target_language}说明。
-12. 不解释翻译过程。
-13. 只输出译文。"#,
+8. 如果原文是表格或包含明显的行列数据，必须输出 GitHub Flavored Markdown（GFM）表格，不要用多个空格、制表符或普通换行模拟列。
+   GFM 表格必须包含表头、分隔行和每行的 `|` 分隔符，格式类似：
+   | 列名 A | 列名 B |
+   | --- | --- |
+   | 值 A | 值 B |
+   不要把表格放入代码围栏或改写为 HTML table；保持原文的行列对应关系、数值、单位和 Markdown 粗体等格式语义；单元格中需要显示的竖线必须写成 `\|`。如果原文不是表格，不要强行改写成表格。
+9. 代码标识符、库名、包名、命令、API 名称等不可翻译部分保留原文，但要翻译其类别或上下文含义；例如 "Python requests" 应译为 "Python requests 库"。
+10. 重要专业术语首次出现时，可以使用"中文术语（English Term）"形式。
+11. 如果输入是短语、标题或不完整的句子，也必须给出{target_language}表达，不要简单照抄原文。
+12. 如果输入确实完全由不可翻译专名组成，可保留专名并补充最小必要的{target_language}说明。
+13. 不解释翻译过程。
+14. 只输出译文。"#,
         target_language = target_language
     );
     let block = termbase.prompt_block();
@@ -66,6 +73,19 @@ mod tests {
     }
 
     #[test]
+    fn prompt_requires_gfm_table_output_for_tabular_input() {
+        let prompt = build_system_prompt("简体中文", &EffectiveTermbase::empty());
+
+        assert_eq!(PROMPT_VERSION, 3);
+        assert!(prompt.contains("GitHub Flavored Markdown（GFM）表格"));
+        assert!(prompt.contains("必须包含表头、分隔行和每行的 `|` 分隔符"));
+        assert!(prompt.contains("| 列名 A | 列名 B |"));
+        assert!(prompt.contains("不要把表格放入代码围栏或改写为 HTML table"));
+        assert!(prompt.contains("如果原文不是表格，不要强行改写成表格"));
+        assert!(prompt.contains("单元格中需要显示的竖线必须写成 `\\|`"));
+    }
+
+    #[test]
     fn empty_termbase_keeps_prompt_unchanged() {
         let empty = build_system_prompt("简体中文", &EffectiveTermbase::empty());
         assert!(!empty.contains("以下是翻译约束"));
@@ -93,6 +113,9 @@ mod tests {
         let prompt = build_system_prompt("简体中文", &entry);
         assert!(prompt.contains("以下是翻译约束；仅在原文术语匹配且语义适用时优先采用右侧译法："));
         assert!(prompt.contains("neural network => 神经网络"));
-        assert!(prompt.ends_with("neural network => 神经网络"), "术语块追加在末尾");
+        assert!(
+            prompt.ends_with("neural network => 神经网络"),
+            "术语块追加在末尾"
+        );
     }
 }

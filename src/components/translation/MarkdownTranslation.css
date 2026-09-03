@@ -25,6 +25,23 @@
   @apply list-decimal;
 }
 
+.translation-markdown-table-wrap {
+  @apply my-2 max-w-full overflow-x-auto;
+}
+
+.translation-markdown-table-wrap table {
+  @apply min-w-full table-auto border-collapse;
+}
+
+.translation-markdown-table-wrap th,
+.translation-markdown-table-wrap td {
+  @apply border-b border-line px-2 py-1 align-top;
+}
+
+.translation-markdown-table-wrap thead th {
+  @apply border-t font-semibold;
+}
+
 .translation-markdown code {
   @apply rounded bg-surface-soft px-1 py-0.5 text-[0.92em];
 }

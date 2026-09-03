@@ -272,10 +272,10 @@ mod tests {
         assert_eq!(key_hex("hello", " 简体中文 "), key_hex("hello", "简体中文"));
     }
 
-#[test]
-    fn cache_key_and_prompt_versions_are_two() {
+    #[test]
+    fn cache_key_and_prompt_versions_are_current() {
         assert_eq!(CACHE_KEY_VERSION, 2);
-        assert_eq!(PROMPT_VERSION, 2);
+        assert_eq!(PROMPT_VERSION, 3);
     }
 
     #[test]
@@ -336,7 +336,7 @@ mod tests {
         );
     }
 
-/// 固定向量：由 blake3 1.8.6 生成，编码规则/版本变化时必须同步更新
+    /// 固定向量：由 blake3 1.8.6 生成，编码规则/版本变化时必须同步更新
     /// 并手动提升 CACHE_KEY_VERSION。默认使用空术语集（全零指纹），
     /// 即"无术语表"缓存键的确定性快照。
     #[test]
@@ -350,11 +350,11 @@ mod tests {
         // 并手动提升 CACHE_KEY_VERSION。
         assert_eq!(
             single,
-            "e96f9027b3654b78ddf8dce5ccd5999fedfd391ba97b39cb3d08cac5c5ec8e02"
+            "08acd9a9c9a7dc0790386fed22113b0e2a4bf10d424bc6157c1838faa89c871e"
         );
         assert_eq!(
             multi,
-            "468bed25e156455144c6bf0b4303f161e521bf650d51aa0d76c9a0a04bfad15d"
+            "d25a026dac25f3c12742aab5cbbba02c1dabf3fecf5f6666aadeafb33f96e333"
         );
         assert_ne!(single, multi);
     }
@@ -370,4 +370,3 @@ mod tests {
         assert_eq!(with_termbase.key, fp1_again.key, "同一指纹确定性一致");
     }
 }
-

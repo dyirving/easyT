@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
+import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import "./MarkdownTranslation.css";
 
@@ -29,10 +30,15 @@ function normalizeTaggedEquations(markdown: string) {
 export function MarkdownTranslation({ text }: MarkdownTranslationProps) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkMath]}
+      remarkPlugins={[remarkGfm, remarkMath]}
       rehypePlugins={[rehypeKatex]}
       components={{
         a: ({ children }) => <span>{children}</span>,
+        table: ({ children }) => (
+          <div className="translation-markdown-table-wrap">
+            <table>{children}</table>
+          </div>
+        ),
       }}
     >
       {normalizeTaggedEquations(text)}

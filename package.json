@@ -3,6 +3,7 @@
   "private": true,
   "version": "2.4.0",
   "type": "module",
+  "license": "Apache-2.0",
   "description": "easyT - 轻量级 Windows 桌面划词翻译应用原型",
   "scripts": {
     "dev": "vite",

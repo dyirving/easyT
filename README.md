@@ -335,4 +335,8 @@ easyT/
 
 ## License
 
-原型项目，仅供学习与技术验证。
+easyT 源代码采用 [Apache License 2.0](LICENSE) 协议发布。
+
+Copyright (c) 2026 dyirving
+
+第三方依赖及其版权声明不包含在本项目版权授权范围内，使用和分发时请分别遵守各依赖项目的许可证要求。easyT 名称及相关商标不因本协议获得授权。
